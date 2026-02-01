@@ -1,0 +1,26 @@
+[Unit]
+Description=Volition Command Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=volition
+WorkingDirectory=/opt/volition
+
+# Add appropriate Redis host IP here
+Environment=REDIS_HOST= 127.0.0.1
+Environment=REDIS_PORT=6379
+# volition is the default password unless you changed it during genesis
+Environment=REDIS_PASSWORD=volition 
+
+ExecStart=/opt/volition/venv/bin/python /opt/volition/volition_dashboard.py
+
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

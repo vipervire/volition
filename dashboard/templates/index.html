@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Volition Command</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              gray: { 900: "#0f1115", 800: "#161b22", 700: "#21262d" },
+            },
+          },
+        },
+      };
+    </script>
+    <script
+      crossorigin
+      src="https://unpkg.com/react@18/umd/react.development.js"
+    ></script>
+    <script
+      crossorigin
+      src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"
+    ></script>
+    <script
+      crossorigin
+      src="https://unpkg.com/@babel/standalone/babel.min.js"
+    ></script>
+    <style>
+      body {
+        background-color: #0d1117;
+        color: #c9d1d9;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
+          Arial, sans-serif;
+      }
+      .glass-panel {
+        background: rgba(22, 27, 34, 0.95);
+        border: 1px solid #30363d;
+        backdrop-filter: blur(10px);
+      }
+      .scrollbar-thin::-webkit-scrollbar {
+        width: 6px;
+      }
+      .scrollbar-thin::-webkit-scrollbar-thumb {
+        background-color: #30363d;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body class="h-screen w-screen overflow-hidden flex flex-col">
+    <div id="root" class="h-full w-full"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useRef, useMemo } = React;
+      const formatTime = (iso) => {
+        if (!iso) return "??:??:??";
+        try {
+          return iso.split("T")[1].split(".")[0];
+        } catch {
+          return new Date().toLocaleTimeString();
+        }
+      };
+
+      // --- COMPONENTS ---
+
+      const EmailView = ({ actions, onSendEmail }) => {
+        const [filterFrom, setFilterFrom] = useState("");
+        const [filterTo, setFilterTo] = useState("");
+        const [composeTo, setComposeTo] = useState("");
+        const [composeMsg, setComposeMsg] = useState("");
+
+        const emails = useMemo(() => {
+          const seenIds = new Set();
+
+          // 1. Map to standardize, capturing the Redis Stream ID for robust dedupe
+          const candidates = actions
+            .map((a) => {
+              try {
+                const entry = JSON.parse(a.data.entry || "{}");
+                if (!entry.action) return null;
+                return {
+                  ...entry,
+                  streamId: a.id, // Capture the Redis ID
+                  recipient: entry.action.recipient || "",
+                  message: entry.action.message || "",
+                };
+              } catch {
+                return null;
+              }
+            })
+            .filter((e) => e && e.action?.tool === "email_send");
+
+          // 2. Reverse FIRST (Newest to Oldest) so we process the latest state first.
+          // This ensures if we have "completed" and "pending" logs for the same ID,
+          // we see the "completed" one first and can dedupe the older "pending" one.
+          const reversed = [...candidates].reverse();
+
+          // 3. Deduplicate and Filter
+          return reversed.filter((e) => {
+            // Filters
+            const matchFrom = filterFrom
+              ? (e.agent || "").toLowerCase().includes(filterFrom.toLowerCase())
+              : true;
+            const matchTo = filterTo
+              ? (e.recipient || "")
+                  .toLowerCase()
+                  .includes(filterTo.toLowerCase())
+              : true;
+            if (!matchFrom || !matchTo) return false;
+
+            // De-duplication Logic:
+            // Use Action ID if available (to collapse pending/completed).
+            // If no Action ID, use a fallback that INCLUDES streamId to prevent collapsing distinct messages.
+            const uniqueKey =
+              e.id || `${e.timestamp_intent}-${e.message}-${e.streamId}`;
+
+            if (seenIds.has(uniqueKey)) return false;
+            seenIds.add(uniqueKey);
+            return true;
+          });
+        }, [actions, filterFrom, filterTo]);
+
+        const handleSend = (e) => {
+          e.preventDefault();
+          if (!composeTo || !composeMsg) return;
+          onSendEmail(composeTo, composeMsg);
+          setComposeMsg("");
+        };
+
+        return (
+          <div className="flex flex-col h-full glass-panel rounded-lg m-2">
+            <div className="p-3 border-b border-gray-700 bg-gray-800 rounded-t-lg flex flex-col gap-2">
+              <div className="flex justify-between items-center">
+                <span className="font-bold">📧 Secure Uplink (Email)</span>
+                <span className="text-xs text-gray-500">
+                  {emails.length} found
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  placeholder="Filter From..."
+                  value={filterFrom}
+                  onChange={(e) => setFilterFrom(e.target.value)}
+                  className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                />
+                <input
+                  placeholder="Filter To..."
+                  value={filterTo}
+                  onChange={(e) => setFilterTo(e.target.value)}
+                  className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                />
+              </div>
+            </div>
+
+            <div className="p-3 border-b border-gray-700 bg-gray-800/50">
+              <form onSubmit={handleSend} className="flex gap-2">
+                <input
+                  placeholder="To: abe-xx"
+                  value={composeTo}
+                  onChange={(e) => setComposeTo(e.target.value)}
+                  className="w-32 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-white"
+                />
+                <input
+                  placeholder="Message content..."
+                  value={composeMsg}
+                  onChange={(e) => setComposeMsg(e.target.value)}
+                  className="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-white"
+                />
+                <button
+                  type="submit"
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-sm font-bold"
+                >
+                  SEND
+                </button>
+              </form>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin">
+              {emails.map((e, i) => (
+                <div
+                  key={i}
+                  className="border border-gray-700 bg-gray-800/30 rounded p-3 hover:bg-gray-800 transition-colors"
+                >
+                  <div className="flex justify-between text-xs text-gray-400 mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-blue-300">{e.agent}</span>
+                      <span className="text-gray-600">➔</span>
+                      <span className="font-bold text-green-300">
+                        {e.recipient}
+                      </span>
+                    </div>
+                    <span>{formatTime(e.timestamp_intent)}</span>
+                  </div>
+                  <div className="text-sm text-gray-200 whitespace-pre-wrap font-sans">
+                    {e.message}
+                  </div>
+                </div>
+              ))}
+              {emails.length === 0 && (
+                <div className="text-gray-500 text-center mt-10">
+                  No emails matching filter.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      const Sidebar = ({ heartbeats }) => {
+        const [now, setNow] = useState(Date.now() / 1000);
+        useEffect(() => {
+          const t = setInterval(() => setNow(Date.now() / 1000), 1000);
+          return () => clearInterval(t);
+        }, []);
+
+        const agents = useMemo(() => {
+          const map = {};
+          map["Human-Abe"] = {
+            lastSeen: Date.now() / 1000,
+            host: "dashboard",
+            display: "Human-Abe",
+          };
+
+          heartbeats.forEach((hb) => {
+            if (!hb.data) return;
+            const abe = hb.data.abe;
+            if (!abe) return;
+
+            if (!map[abe]) map[abe] = { lastSeen: 0 };
+            // Robust check for display name
+            const displayName = hb.data.display || abe;
+
+            map[abe] = {
+              lastSeen: Date.now() / 1000,
+              host: hb.data.host || "unknown",
+              display: displayName,
+            };
+          });
+          return Object.values(map)
+            .map((a) => ({ ...a, lag: Date.now() / 1000 - a.lastSeen }))
+            .sort((a, b) => a.display.localeCompare(b.display));
+        }, [heartbeats]);
+
+        return (
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin">
+            <h2 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+              Fleet Status
+            </h2>
+            {agents.map((agent, i) => (
+              <div key={i} className="flex items-center gap-3 group">
+                <div
+                  className={`h-2 w-2 rounded-full ${
+                    agent.lag < 70
+                      ? "bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.6)]"
+                      : agent.lag < 180
+                      ? "bg-yellow-500"
+                      : "bg-red-500"
+                  }`}
+                ></div>
+                <div>
+                  <div className="text-sm font-bold text-gray-200 group-hover:text-white">
+                    {agent.display}
+                  </div>
+                  <div className="text-[10px] text-gray-500">{agent.host}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      };
+
+      const DigestPanel = ({ digests }) => {
+        const bottomRef = useRef(null);
+        useEffect(
+          () => bottomRef.current?.scrollIntoView({ behavior: "smooth" }),
+          [digests]
+        );
+
+        // Robust parser for the "Serialization Trap"
+        const parseParticipants = (raw) => {
+            if (!raw) return [];
+            if (Array.isArray(raw)) return raw;
+            try {
+                // Try standard JSON first
+                return JSON.parse(raw);
+            } catch (e) {
+                // Fallback for Python string lists ['a', 'b']
+                try {
+                    return JSON.parse(raw.replace(/'/g, '"'));
+                } catch (e2) {
+                    return [raw]; // Give up, return as string in array
+                }
+            }
+        };
+
+        return (
+          <div className="flex flex-col h-full glass-panel rounded-lg m-2 p-2 min-h-0">
+             <h2 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-700 pb-1 flex justify-between">
+              <span>Ambient Messages</span>
+              <span className="text-[10px] opacity-50">{digests.length}</span>
+            </h2>
+            <div className="flex-1 overflow-y-auto space-y-3 font-sans scrollbar-thin">
+              {digests.map((d, i) => {
+                const data = d.data || {};
+                const participants = parseParticipants(data.participants);
+                
+                return (
+                  <div key={i} className="bg-gray-800/40 border border-gray-700 rounded p-3">
+                     <div className="flex justify-between items-center mb-2">
+                        <div className="flex -space-x-2">
+                            {participants.map((p, idx) => (
+                                <div key={idx} className="w-6 h-6 rounded-full bg-blue-900 border border-gray-600 flex items-center justify-center text-[10px] font-bold text-blue-200" title={p}>
+                                    {p.substring(0,2).toUpperCase()}
+                                </div>
+                            ))}
+                        </div>
+                        <span className="text-[10px] text-gray-500">{formatTime(data.generated_at)}</span>
+                     </div>
+                     <div className="text-xs text-gray-300 leading-relaxed italic">
+                        "{data.summary}"
+                     </div>
+                     <div className="mt-2 text-[10px] text-gray-600 flex justify-between">
+                        <span>{data.msg_count} messages</span>
+                        <span>{(data.end_ts - data.start_ts).toFixed(0)}s duration</span>
+                     </div>
+                  </div>
+                );
+              })}
+              {digests.length === 0 && <div className="text-xs text-gray-600 text-center italic mt-10">No bursts detected yet.</div>}
+              <div ref={bottomRef} />
+            </div>
+          </div>
+        );
+      };
+
+      const ActionLog = ({ events }) => {
+        const bottomRef = useRef(null);
+        useEffect(
+          () => bottomRef.current?.scrollIntoView({ behavior: "smooth" }),
+          [events]
+        );
+        return (
+          <div className="flex flex-col h-full glass-panel rounded-lg m-2 p-2 min-h-0">
+            <h2 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-700 pb-1">
+              Action Log
+            </h2>
+            <div className="flex-1 overflow-y-auto space-y-3 font-mono text-xs scrollbar-thin">
+              {events.map((e, i) => {
+                let entry = {};
+                try {
+                  entry = JSON.parse(e.data.entry || "{}");
+                } catch {
+                  return null;
+                }
+
+                const statusColor =
+                  entry.status === "completed"
+                    ? "text-green-400"
+                    : entry.status === "pending"
+                    ? "text-yellow-400"
+                    : "text-blue-400";
+
+                return (
+                  <div
+                    key={i}
+                    className="border-l-2 border-gray-700 pl-2 py-1 hover:bg-gray-800/30 transition-colors"
+                  >
+                    <div className="flex justify-between text-gray-500 mb-0.5">
+                      <span className="font-bold text-blue-300">
+                        {entry.agent}
+                      </span>
+                      <span>{formatTime(entry.timestamp_intent || "")}</span>
+                    </div>
+
+                    <div className={`${statusColor} font-bold mb-0.5`}>
+                      {entry.action?.tool || "Unknown Tool"}
+                    </div>
+
+                    {/* Tool Args */}
+                    <div className="text-gray-400 mb-1 break-all opacity-80">
+                      {JSON.stringify(entry.action || {}).slice(0, 100)}
+                      {JSON.stringify(entry.action || {}).length > 100
+                        ? "..."
+                        : ""}
+                    </div>
+
+                    {entry.reasoning && (
+                      <div className="text-gray-500 italic pl-2 border-l border-gray-600 mt-1">
+                        "{entry.reasoning}"
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              <div ref={bottomRef} />
+            </div>
+          </div>
+        );
+      };
+
+      const ChatWindow = ({ channel, messages, onSend, identity }) => {
+        const [input, setInput] = useState("");
+        const bottomRef = useRef(null);
+        useEffect(
+          () => bottomRef.current?.scrollIntoView({ behavior: "smooth" }),
+          [messages]
+        );
+
+        const handleSubmit = (e) => {
+          e.preventDefault();
+          if (!input.trim()) return;
+          onSend(channel, input);
+          setInput("");
+        };
+
+        const displayChannel = channel
+          ? channel.replace("chat:", "")
+          : "unknown";
+
+        return (
+          <div className="flex flex-col h-full glass-panel rounded-lg m-2">
+            <div className="p-3 border-b border-gray-700 font-bold flex justify-between items-center bg-gray-800 rounded-t-lg">
+              <span>#{displayChannel}</span>
+              {channel === "chat:synchronous" && (
+                <span className="text-xs bg-red-900 text-red-200 px-2 py-0.5 rounded animate-pulse">
+                  LIVE/SYNC
+                </span>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+              {messages.map((m, i) => {
+                const isMe = m.data.from === identity || m.data.from === "Human-Abe";
+                return (
+                  <div
+                    key={i}
+                    className={`flex ${isMe ? "justify-end" : "justify-start"}`}
+                  >
+                    <div
+                      className={`max-w-[80%] rounded-lg p-3 ${
+                        isMe
+                          ? "bg-blue-900/40 border border-blue-800/50"
+                          : "bg-gray-800/60 border border-gray-700"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 text-xs text-gray-400 mb-1">
+                        <span
+                          className={`font-bold ${
+                            isMe ? "text-blue-300" : "text-green-300"
+                          }`}
+                        >
+                          {m.data.from}
+                        </span>
+                        <span>{formatTime(m.data.timestamp)}</span>
+                      </div>
+                      <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                        {m.data.content}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={bottomRef} />
+            </div>
+            <form
+              onSubmit={handleSubmit}
+              className="p-3 border-t border-gray-700"
+            >
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder={`Message #${displayChannel} as ${identity}...`}
+              />
+            </form>
+          </div>
+        );
+      };
+
+      const App = () => {
+        const [socket, setSocket] = useState(null);
+        const [activeView, setActiveView] = useState("chat:general");
+        const [identity, setIdentity] = useState("Human-Abe"); // New Identity State
+
+        const [chats, setChats] = useState({});
+        const [actions, setActions] = useState([]);
+        const [digests, setDigests] = useState([]); // New State
+        const [heartbeats, setHeartbeats] = useState([]);
+        const [channels, setChannels] = useState([
+          "chat:general",
+          "chat:synchronous",
+        ]);
+        
+        // Right Panel Toggle State
+        const [showLogs, setShowLogs] = useState(true);
+        const [showDigests, setShowDigests] = useState(true);
+
+        useEffect(() => {
+          const ws = new WebSocket(`ws://${window.location.host}/ws`);
+
+          ws.onopen = () => console.log("Connected to Volition");
+
+          ws.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+
+              if (msg.type === "channel_discovery") {
+                setChannels((prev) => {
+                  if (prev.includes(msg.channel)) return prev;
+                  const others = [...prev, msg.channel]
+                    .filter(
+                      (c) => c !== "chat:general" && c !== "chat:synchronous"
+                    )
+                    .sort();
+                  return ["chat:general", "chat:synchronous", ...others];
+                });
+              } else if (msg.type === "stream_event") {
+                if (msg.stream.startsWith("chat:")) {
+                  setChats((prev) => ({
+                    ...prev,
+                    [msg.stream]: [...(prev[msg.stream] || []), msg].sort(
+                      (a, b) =>
+                        (a.data.timestamp || "").localeCompare(
+                          b.data.timestamp || ""
+                        )
+                    ),
+                  }));
+                }
+                if (msg.stream === "volition:action_log") {
+                  setActions((prev) => {
+                    const exists = prev.some((p) => p.id === msg.id);
+                    if (exists) return prev;
+                    
+                    // Sort AND Slice to keep only the last 100
+                    const sorted = [...prev, msg].sort((a, b) => {
+                      const ta = JSON.parse(a.data.entry || "{}").timestamp_intent || "";
+                      const tb = JSON.parse(b.data.entry || "{}").timestamp_intent || "";
+                      return ta.localeCompare(tb);
+                    });
+                    
+                    return sorted.slice(-200);
+                  });
+                }
+                if (msg.stream === "volition:social_digests") {
+                    setDigests((prev) => {
+                        const exists = prev.some((p) => p.id === msg.id);
+                        if (exists) return prev;
+                        // Sort by generated_at
+                        return [...prev, msg].sort((a, b) => 
+                            (a.data.generated_at || "").localeCompare(b.data.generated_at || "")
+                        );
+                    });
+                }
+                if (msg.stream === "volition:heartbeat") {
+                  setHeartbeats((prev) => {
+                    return [...prev.slice(-100), msg];
+                  });
+                }
+              }
+            } catch (e) {
+              console.error("Parse error on WS message:", e);
+            }
+          };
+          setSocket(ws);
+          return () => ws.close();
+        }, []);
+
+        const handleSendChat = (channel, content) => {
+          if (socket)
+            socket.send(
+              JSON.stringify({
+                action: "post",
+                channel: channel.replace("chat:", ""),
+                content,
+                sender: identity // Pass Identity
+              })
+            );
+        };
+
+        const handleSendEmail = (target, content) => {
+          if (socket)
+            socket.send(JSON.stringify({ 
+                action: "email", 
+                target, 
+                content,
+                sender: identity // Pass Identity
+            }));
+        };
+
+        return (
+          <div className="flex h-full bg-[#0d1117]">
+            <div className="flex flex-col w-64 glass-panel m-2 rounded-lg border-r border-gray-800">
+              <div className="p-4 text-xl font-bold text-white tracking-widest border-b border-gray-800 text-center bg-gray-900/50 rounded-t-lg">
+                VOLITION
+              </div>
+
+              {/* IDENTITY INPUT */}
+              <div className="p-2 border-b border-gray-800 bg-gray-900/30">
+                  <div className="text-[10px] text-gray-500 font-bold mb-1 uppercase tracking-widest">Identity</div>
+                  <input 
+                    value={identity}
+                    onChange={(e) => setIdentity(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 text-sm text-blue-200 p-1.5 rounded focus:outline-none focus:border-blue-500"
+                    placeholder="Sender Name..."
+                  />
+              </div>
+
+              <div className="p-2 space-y-1">
+                <div className="text-[10px] text-gray-500 px-4 py-2 font-bold uppercase tracking-widest">
+                  COMMS
+                </div>
+                {channels.map((ch) => (
+                  <button
+                    key={ch}
+                    onClick={() => setActiveView(ch)}
+                    className={`w-full text-left px-4 py-2 rounded text-sm transition-all ${
+                      activeView === ch
+                        ? "bg-gray-800 text-white shadow-md"
+                        : "text-gray-400 hover:bg-gray-800/50"
+                    }`}
+                  >
+                    <span className="opacity-50 mr-2">#</span>
+                    {ch.replace("chat:", "")}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setActiveView("emails")}
+                  className={`w-full text-left px-4 py-2 rounded text-sm transition-all mt-2 ${
+                    activeView === "emails"
+                      ? "bg-blue-900/30 text-blue-300 border border-blue-800/30"
+                      : "text-gray-400 hover:bg-gray-800/50"
+                  }`}
+                >
+                  <span className="mr-2">✉️</span>Uplink
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-hidden flex flex-col border-t border-gray-800 mt-2">
+                <Sidebar heartbeats={heartbeats} />
+              </div>
+            </div>
+
+            <div className="flex-1 flex flex-col min-w-0 py-2">
+              {activeView === "emails" ? (
+                <EmailView actions={actions} onSendEmail={handleSendEmail} />
+              ) : (
+                <ChatWindow
+                  channel={activeView}
+                  messages={chats[activeView] || []}
+                  onSend={handleSendChat}
+                  identity={identity}
+                />
+              )}
+            </div>
+
+            <div className="w-96 flex flex-col py-2 pr-2 h-full">
+               {/* Toggle Controls */}
+               <div className="flex justify-end gap-1 mb-1 px-2">
+                  <button 
+                    onClick={() => setShowLogs(!showLogs)} 
+                    className={`text-[10px] px-2 py-0.5 rounded border ${showLogs ? 'bg-blue-900/30 border-blue-800 text-blue-200' : 'bg-gray-800 border-gray-700 text-gray-500'}`}
+                  >
+                    LOGS
+                  </button>
+                  <button 
+                    onClick={() => setShowDigests(!showDigests)} 
+                    className={`text-[10px] px-2 py-0.5 rounded border ${showDigests ? 'bg-purple-900/30 border-purple-800 text-purple-200' : 'bg-gray-800 border-gray-700 text-gray-500'}`}
+                  >
+                    DIGESTS
+                  </button>
+               </div>
+
+               {/* Stacked Panels */}
+               <div className="flex-1 flex flex-col min-h-0 gap-2">
+                  {showLogs && (
+                      <div className={`${showDigests ? 'h-1/2' : 'h-full'} transition-all duration-300`}>
+                        <ActionLog events={actions} />
+                      </div>
+                  )}
+                  {showDigests && (
+                      <div className={`${showLogs ? 'h-1/2' : 'h-full'} transition-all duration-300`}>
+                        <DigestPanel digests={digests} />
+                      </div>
+                  )}
+               </div>
+            </div>
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>

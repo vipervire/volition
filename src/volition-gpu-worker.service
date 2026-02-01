@@ -1,0 +1,39 @@
+[Unit]
+Description=Volition GPU Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/volition
+
+# Environment
+Environment=REDIS_HOST=
+Environment=REDIS_PORT=6379
+Environment=REDIS_PASSWORD=volition
+Environment=OLLAMA_URL=http://localhost:11434/api
+Environment=MODEL_EMBED=nomic-embed-text
+Environment=MODEL_SUMMARIZE=mistral
+
+Environment=EMBEDDING_BACKEND=ollama # IF YOU DO NOT HAVE OLLAMA, SET THIS TO openrouter
+Environment=OPENROUTER_API_KEY= sk-xxxxxxxx # Set this if using openrouter
+Environment=OPENROUTER_MODEL_EMBED=google/gemini-embedding-001 # Set this if using openrouter
+
+# Python
+#ExecStart=/usr/bin/python3 /opt/volition/gpu_worker.py
+ExecStart=/opt/volition/venv/bin/python /opt/volition/gpu_worker.py
+# Restart behavior
+Restart=always
+RestartSec=3
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Resource sanity (optional but recommended)
+Nice=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

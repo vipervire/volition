@@ -1,0 +1,38 @@
+[Unit]
+Description=Volition Ear (Social Router & Digest Generator)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/volition
+
+# Environment
+Environment=REDIS_HOST=
+Environment=REDIS_PORT=6379
+Environment=REDIS_PASSWORD=volition
+Environment=OLLAMA_URL=http://localhost:11434/api
+Environment=MODEL_SUMMARIZE=mistral
+Environment=SUMMARIZE_BACKEND=ollama
+Environment=OPENROUTER_API_KEY=sk-xxxxxxxx
+Environment=OPENROUTER_MODEL_SUMMARIZE=google/gemini-3-flash-preview
+
+
+# Python (same venv as gpu-worker)
+ExecStart=/opt/volition/venv/bin/python /opt/volition/ear.py
+
+# Restart behavior
+Restart=always
+RestartSec=3
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# This is a listener, keep it polite
+Nice=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

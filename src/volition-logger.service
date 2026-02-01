@@ -1,0 +1,17 @@
+# volition-logger.service
+[Unit]
+Description=Volition Immutable Audit Logger
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=root
+# Assuming script is executable and python/redis is installed globally or adjust path
+ExecStart=/usr/bin/python3 /usr/local/bin/volition-logger.py
+Environment="REDIS_HOST=127.0.0.1"
+Environment="PYTHONUNBUFFERED=1"
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

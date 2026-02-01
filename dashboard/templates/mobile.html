@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta 
+      name="viewport" 
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" 
+    />
+    <title>Volition Mobile</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              gray: { 900: "#0f1115", 800: "#161b22", 700: "#21262d" },
+            },
+            spacing: {
+              'safe-top': 'env(safe-area-inset-top)',
+              'safe-bottom': 'env(safe-area-inset-bottom)',
+            }
+          },
+        },
+      };
+    </script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      /* NUCLEAR OPTION for Mobile Layout Stability */
+      html, body {
+        height: 100%; 
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden; /* Prevent body scroll */
+        background-color: #000;
+        position: fixed; /* Pins layout to viewport, preventing address bar shift issues */
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+      }
+      
+      #root {
+        height: 100%;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .glass-panel {
+        background: rgba(22, 27, 34, 0.95);
+        border: 1px solid #30363d;
+        backdrop-filter: blur(10px);
+      }
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+    </style>
+  </head>
+  <body class="text-white">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useRef, useMemo } = React;
+      const formatTime = (iso) => {
+        if (!iso) return "??:??";
+        try {
+          return iso.split("T")[1].substring(0, 5); 
+        } catch {
+          return new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        }
+      };
+
+      const Icons = {
+        Chat: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>,
+        Fleet: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>,
+        Activity: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>,
+        Send: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>,
+        Email: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+      };
+
+      class SafeRender extends React.Component {
+        constructor(props) {
+            super(props);
+            this.state = { hasError: false };
+        }
+        static getDerivedStateFromError(error) {
+            return { hasError: true };
+        }
+        componentDidCatch(error, errorInfo) {
+            console.error("Component Crash:", error, errorInfo);
+        }
+        render() {
+            if (this.state.hasError) {
+                return <div className="p-4 text-red-500 text-xs border border-red-900 bg-red-900/10 rounded m-2">View Error</div>;
+            }
+            return this.props.children;
+        }
+      }
+
+      const MobileChat = ({ channel, messages, onSend, identity }) => {
+        const [input, setInput] = useState("");
+        const bottomRef = useRef(null);
+        
+        useEffect(() => {
+             if (bottomRef.current) bottomRef.current.scrollIntoView();
+        }, [messages]);
+
+        const handleSubmit = (e) => {
+          e.preventDefault();
+          if (!input.trim()) return;
+          onSend(channel, input);
+          setInput("");
+        };
+
+        return (
+          <div className="flex flex-col h-full bg-gray-900">
+             <div className="flex-1 overflow-y-auto p-3 space-y-3 pb-4 no-scrollbar">
+                {messages.map((m, i) => {
+                    const data = m?.data || {};
+                    const from = data.from || "Unknown";
+                    const isMe = from === identity || from === "Human-Abe" || from === "Human";
+                    
+                    return (
+                        <div key={i} className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
+                           <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                               isMe ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-200"
+                           }`}>
+                                <div className={`text-[10px] font-bold mb-0.5 opacity-75 ${isMe ? "text-blue-200" : "text-gray-400"}`}>
+                                    {from} • {formatTime(data.timestamp)}
+                                </div>
+                                <div className="leading-snug break-words">{data.content}</div>
+                           </div>
+                        </div>
+                    );
+                })}
+                <div ref={bottomRef} />
+             </div>
+             
+             <div className="p-2 bg-gray-800 border-t border-gray-700">
+                 <form onSubmit={handleSubmit} className="flex gap-2">
+                     <input 
+                        className="flex-1 bg-gray-900 border border-gray-700 rounded-full px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                        placeholder={`Message #${channel.replace("chat:", "")}...`}
+                        value={input}
+                        onChange={e => setInput(e.target.value)}
+                     />
+                     <button type="submit" className="bg-blue-600 text-white rounded-full p-2.5 flex items-center justify-center">
+                        <Icons.Send />
+                     </button>
+                 </form>
+             </div>
+          </div>
+        );
+      };
+
+      const MobileFleet = ({ heartbeats }) => {
+          const agents = useMemo(() => {
+            const map = {};
+            heartbeats.forEach((hb) => {
+              if (!hb.data) return;
+              const abe = hb.data.abe;
+              if (!abe) return;
+              map[abe] = {
+                lastSeen: Date.now() / 1000,
+                host: hb.data.host || "unknown",
+                display: hb.data.display || abe,
+              };
+            });
+            const now = Date.now() / 1000;
+            return Object.values(map)
+                .map(a => ({...a, lag: now - a.lastSeen}))
+                .sort((a,b) => a.display.localeCompare(b.display));
+          }, [heartbeats]);
+
+          return (
+              <div className="p-4 space-y-3 overflow-y-auto h-full">
+                  <h2 className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-4">Active Agents</h2>
+                  {agents.length === 0 && <div className="text-gray-600 text-center py-10">No signals detected.</div>}
+                  {agents.map((agent, i) => (
+                      <div key={i} className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                               <div className={`h-3 w-3 rounded-full ${agent.lag < 70 ? "bg-green-500" : "bg-red-500"}`}></div>
+                               <div>
+                                   <div className="font-bold text-white">{agent.display}</div>
+                                   <div className="text-xs text-gray-500">{agent.host}</div>
+                               </div>
+                          </div>
+                          <div className="text-xs font-mono text-gray-500">
+                              {agent.lag < 60 ? "OK" : `${Math.floor(agent.lag)}s lag`}
+                          </div>
+                      </div>
+                  ))}
+              </div>
+          );
+      };
+
+      const MobileUplink = ({ actions, onSendEmail }) => {
+          const [subTab, setSubTab] = useState("compose"); 
+          const [to, setTo] = useState("");
+          const [msg, setMsg] = useState("");
+
+          const emails = useMemo(() => {
+             const candidates = actions
+                .filter(a => {
+                    try {
+                        const e = JSON.parse(a.data.entry || "{}");
+                        return e.action && e.action.tool === "email_send";
+                    } catch { return false; }
+                })
+                .map(a => {
+                    const e = JSON.parse(a.data.entry);
+                    return { ...e, timestamp: e.timestamp_intent };
+                })
+                .sort((a,b) => (b.timestamp||"").localeCompare(a.timestamp||""));
+             return candidates;
+          }, [actions]);
+
+          const handleSend = (e) => {
+              e.preventDefault();
+              if(!to || !msg) return;
+              onSendEmail(to, msg);
+              setMsg("");
+              setSubTab("inbox");
+          };
+
+          return (
+              <div className="flex flex-col h-full bg-gray-900">
+                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                    {subTab === 'inbox' ? (
+                        <div className="space-y-3">
+                           {emails.length === 0 && <div className="text-center text-gray-600 mt-10 text-sm">No recent emails found.</div>}
+                           {emails.map((e, i) => (
+                               <div key={i} className="bg-gray-800 border border-gray-700 p-3 rounded-lg">
+                                  <div className="flex justify-between text-xs text-gray-500 mb-2">
+                                     <span className="text-blue-300 font-bold">{e.agent} → {e.action.recipient}</span>
+                                     <span>{formatTime(e.timestamp)}</span>
+                                  </div>
+                                  <div className="text-sm text-gray-200 whitespace-pre-wrap">{e.action.message}</div>
+                               </div>
+                           ))}
+                        </div>
+                    ) : (
+                        <div className="flex flex-col h-full justify-center">
+                           <div className="bg-gray-800 border border-gray-700 p-4 rounded-lg space-y-4">
+                               <h3 className="font-bold text-gray-400 uppercase tracking-widest text-xs">Secure Uplink</h3>
+                               <div>
+                                   <label className="block text-xs text-gray-500 mb-1">To (comma separated)</label>
+                                   <input value={to} onChange={e=>setTo(e.target.value)} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white" placeholder="abe-01, abe-02" />
+                               </div>
+                               <div>
+                                   <label className="block text-xs text-gray-500 mb-1">Message</label>
+                                   <textarea value={msg} onChange={e=>setMsg(e.target.value)} className="w-full h-32 bg-gray-900 border border-gray-600 rounded p-2 text-white" placeholder="Direct command..." />
+                               </div>
+                               <button onClick={handleSend} className="w-full bg-blue-600 text-white font-bold py-3 rounded hover:bg-blue-500">SEND UPLINK</button>
+                           </div>
+                        </div>
+                    )}
+                 </div>
+
+                 {/* Bottom Sub-Tabs (Sticky to bottom of content area) */}
+                 <div className="grid grid-cols-2 bg-gray-800 border-t border-gray-700">
+                     <button onClick={()=>setSubTab("compose")} className={`py-3 text-xs font-bold uppercase ${subTab==='compose' ? 'text-blue-400 border-t-2 border-blue-400 bg-gray-800' : 'text-gray-500 bg-gray-900'}`}>Compose</button>
+                     <button onClick={()=>setSubTab("inbox")} className={`py-3 text-xs font-bold uppercase ${subTab==='inbox' ? 'text-blue-400 border-t-2 border-blue-400 bg-gray-800' : 'text-gray-500 bg-gray-900'}`}>Sent Log</button>
+                 </div>
+              </div>
+          );
+      };
+
+      const MobileActivity = ({ actions, digests }) => {
+          const [subTab, setSubTab] = useState("logs");
+
+          return (
+              <div className="flex flex-col h-full bg-gray-900">
+                  <div className="flex-1 overflow-y-auto p-2 no-scrollbar">
+                      {subTab === 'logs' ? (
+                          <div className="space-y-2">
+                              {actions.map((e, i) => {
+                                  try {
+                                    const entry = JSON.parse(e.data.entry || "{}");
+                                    const statusColor = entry.status === "completed" ? "text-green-400" : "text-yellow-400";
+                                    return (
+                                        <div key={i} className="bg-gray-800/30 border-l-2 border-gray-600 p-2 text-xs rounded-r">
+                                            <div className="flex justify-between mb-1">
+                                                <span className="font-bold text-blue-300">{entry.agent}</span>
+                                                <span className="text-gray-500">{formatTime(entry.timestamp_intent)}</span>
+                                            </div>
+                                            <div className={`${statusColor} font-bold`}>{entry.action?.tool || "Unknown"}</div>
+                                            {entry.reasoning && <div className="text-gray-400 italic mt-1 pl-1 border-l border-gray-700">"{entry.reasoning}"</div>}
+                                        </div>
+                                    )
+                                  } catch { return null; }
+                              })}
+                          </div>
+                      ) : (
+                          <div className="space-y-2">
+                              {digests.map((d, i) => {
+                                  try {
+                                      const data = d.data || {};
+                                      return (
+                                          <div key={i} className="bg-gray-800 border border-gray-700 rounded p-3 text-xs">
+                                              <div className="text-gray-500 mb-1 flex justify-between">
+                                                  <span>Ambient Burst</span>
+                                                  <span>{formatTime(data.generated_at)}</span>
+                                              </div>
+                                              <div className="text-gray-200 italic leading-relaxed">"{data.summary}"</div>
+                                          </div>
+                                      )
+                                  } catch { return null; }
+                              })}
+                          </div>
+                      )}
+                  </div>
+                  
+                  {/* Bottom Sub-Tabs */}
+                  <div className="grid grid-cols-2 bg-gray-800 border-t border-gray-700">
+                     <button onClick={()=>setSubTab("logs")} className={`py-3 text-xs font-bold uppercase ${subTab==='logs' ? 'text-blue-400 border-t-2 border-blue-400 bg-gray-800' : 'text-gray-500 bg-gray-900'}`}>Action Logs</button>
+                     <button onClick={()=>setSubTab("digests")} className={`py-3 text-xs font-bold uppercase ${subTab==='digests' ? 'text-blue-400 border-t-2 border-blue-400 bg-gray-800' : 'text-gray-500 bg-gray-900'}`}>Digests</button>
+                 </div>
+              </div>
+          );
+      };
+
+      const App = () => {
+        const [activeTab, setActiveTab] = useState("chat");
+        const [identity, setIdentity] = useState("Human-Abe");
+        const [socket, setSocket] = useState(null);
+        
+        const [chats, setChats] = useState({});
+        const [activeChannel, setActiveChannel] = useState("chat:general");
+        const [channels, setChannels] = useState(["chat:general"]);
+        const [actions, setActions] = useState([]);
+        const [digests, setDigests] = useState([]);
+        const [heartbeats, setHeartbeats] = useState([]);
+        const [connected, setConnected] = useState(false);
+
+        useEffect(() => {
+          const ws = new WebSocket(`ws://${window.location.host}/ws`);
+          ws.onopen = () => setConnected(true);
+          ws.onclose = () => setConnected(false);
+
+          ws.onmessage = (event) => {
+             try {
+                 const msg = JSON.parse(event.data);
+                 if (msg.type === "channel_discovery") {
+                     setChannels(prev => prev.includes(msg.channel) ? prev : [...prev, msg.channel].sort());
+                 }
+                 else if (msg.type === "stream_event") {
+                     if (msg.stream.startsWith("chat:")) {
+                         setChats(prev => ({
+                             ...prev,
+                             [msg.stream]: [...(prev[msg.stream] || []), msg].sort((a,b) => (a.data.timestamp||"").localeCompare(b.data.timestamp||""))
+                         }));
+                     }
+                     else if (msg.stream === "volition:action_log") {
+                         setActions(prev => {
+                             if (prev.some(p => p.id === msg.id)) return prev;
+                             return [...prev, msg].sort((a,b) => {
+                                 const ta = JSON.parse(a.data.entry||"{}").timestamp_intent || "";
+                                 const tb = JSON.parse(b.data.entry||"{}").timestamp_intent || "";
+                                 return tb.localeCompare(ta); 
+                             }).slice(0, 50); 
+                         });
+                     }
+                     else if (msg.stream === "volition:social_digests") {
+                         setDigests(prev => [...prev.filter(p=>p.id!==msg.id), msg].sort((a,b) => (b.data.generated_at||"").localeCompare(a.data.generated_at||"")).slice(0,20));
+                     }
+                     else if (msg.stream === "volition:heartbeat") {
+                         setHeartbeats(prev => [...prev.slice(-50), msg]);
+                     }
+                 }
+             } catch(e) { console.error(e); }
+          };
+
+          setSocket(ws);
+          return () => ws.close();
+        }, []);
+
+        const handleSendChat = (channel, content) => {
+            if (socket) socket.send(JSON.stringify({ 
+                action: "post", 
+                channel: channel.replace("chat:", ""), 
+                content,
+                sender: identity
+            }));
+        };
+        
+        const handleSendEmail = (target, content) => {
+            if (socket) socket.send(JSON.stringify({ 
+                action: "email", 
+                target, 
+                content,
+                sender: identity
+            }));
+        };
+
+        return (
+          <div className="flex flex-col h-full bg-black text-white">
+            
+            {/* 1. Header Bar - Added safe-top padding */}
+            <div className="h-12 pt-safe-top box-content border-b border-gray-800 bg-gray-900 flex items-center justify-between px-4 z-20 shrink-0">
+                <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                    <span className="font-bold tracking-widest text-sm">VOLITION</span>
+                </div>
+                <input 
+                    className="bg-gray-800 border border-gray-700 text-xs text-blue-200 rounded px-2 py-1 w-24 text-right focus:w-32 transition-all focus:outline-none focus:border-blue-500"
+                    value={identity}
+                    onChange={(e) => setIdentity(e.target.value)}
+                    placeholder="Identity"
+                />
+            </div>
+
+            {/* 2. Channel Selector (Only if Chat Tab) */}
+            {activeTab === 'chat' && (
+                <div className="bg-gray-900 border-b border-gray-800 overflow-x-auto whitespace-nowrap p-2 flex gap-2 no-scrollbar shrink-0">
+                    {channels.map(ch => (
+                        <button
+                            key={ch}
+                            onClick={() => setActiveChannel(ch)}
+                            className={`px-3 py-1 rounded-full text-xs font-bold transition-colors ${
+                                activeChannel === ch 
+                                ? 'bg-blue-600 text-white' 
+                                : 'bg-gray-800 text-gray-400 border border-gray-700'
+                            }`}
+                        >
+                            #{ch.replace("chat:", "")}
+                        </button>
+                    ))}
+                </div>
+            )}
+
+            {/* 3. Main Content Area */}
+            <div className="flex-1 overflow-hidden relative bg-black">
+                <SafeRender>
+                    {activeTab === 'chat' && (
+                        <MobileChat 
+                            channel={activeChannel} 
+                            messages={chats[activeChannel] || []}
+                            onSend={handleSendChat}
+                            identity={identity}
+                        />
+                    )}
+                    {activeTab === 'uplink' && <MobileUplink actions={actions} onSendEmail={handleSendEmail} />}
+                    {activeTab === 'fleet' && <MobileFleet heartbeats={heartbeats} />}
+                    {activeTab === 'activity' && <MobileActivity actions={actions} digests={digests} />}
+                </SafeRender>
+            </div>
+
+            {/* 4. Bottom Tab Bar - Added safe-bottom padding */}
+            <div className="bg-gray-900 border-t border-gray-800 flex items-center justify-around pb-safe-bottom shrink-0 z-30 relative box-content h-16">
+                <button onClick={() => setActiveTab('chat')} className={`flex flex-col items-center gap-1 p-2 w-full ${activeTab==='chat' ? 'text-blue-400' : 'text-gray-500'}`}>
+                    <Icons.Chat />
+                    <span className="text-[10px] font-bold">Chat</span>
+                </button>
+                <button onClick={() => setActiveTab('uplink')} className={`flex flex-col items-center gap-1 p-2 w-full ${activeTab==='uplink' ? 'text-blue-400' : 'text-gray-500'}`}>
+                    <Icons.Email />
+                    <span className="text-[10px] font-bold">Uplink</span>
+                </button>
+                <button onClick={() => setActiveTab('fleet')} className={`flex flex-col items-center gap-1 p-2 w-full ${activeTab==='fleet' ? 'text-blue-400' : 'text-gray-500'}`}>
+                    <Icons.Fleet />
+                    <span className="text-[10px] font-bold">Fleet</span>
+                </button>
+                <button onClick={() => setActiveTab('activity')} className={`flex flex-col items-center gap-1 p-2 w-full ${activeTab==='activity' ? 'text-blue-400' : 'text-gray-500'}`}>
+                    <Icons.Activity />
+                    <span className="text-[10px] font-bold">Activity</span>
+                </button>
+            </div>
+
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
