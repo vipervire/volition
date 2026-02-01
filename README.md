@@ -139,6 +139,39 @@ After spawning Abe-01 and setting up your infrastructure, you should send him an
 
 Something like the one in GENESIS_TASK.md file currently in ~/docs. Please modify this to match your requirements.
 
+
+---
+
+### Verify
+
+#### Required filesystem layout inside the container
+
+When you `pct enter` an Abe, the following **must exist**:
+
+The Docs must contain 0.0-Abe-Genesis_Prompt, 98-source_profile.md, 99-current_services.md, and Volition-1 through Volition-8 documentation.
+
+```
+/root
+├── bin/
+├── docs/
+├── logs/
+├── src/
+├── .ssh/
+├── .abe-identity
+├── .abe-clipboard-<abe-name>.md
+├── working.log
+├── communications.log
+├── todo.db
+└── memory/
+    ├── episodes/
+    ├── tier_1_archive/
+    ├── overflow/
+    ├── downloads/
+    └── vector.db/
+```
+
+If any of these are missing, the agent is malformed. You can manually copy files.
+
 ---
 
 ## Infrastructure Services (Required)
