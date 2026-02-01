@@ -80,6 +80,22 @@ Genesis creates exactly one Abe (abe-01). All other services are infrastructure.
 
 ---
 
+## Important: Read the Docs
+
+Volition is not a plug-and-play tool. Before operating or modifying a live system, you should at minimum read every file in docs/.
+
+Those documents explain:
+
+- what the system is designed to do
+
+- what it is explicitly not designed to do
+
+- where authority, memory, and safety boundaries live
+
+- **HOW** the architecture works.
+
+If you skip them, you will misunderstand the system and likely get frustrated.
+
 ## Quick Start (Semi-Automatic / Genesis)
 
 This is the 'shortest' path.
