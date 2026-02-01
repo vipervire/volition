@@ -15,7 +15,7 @@
 
 * **LOGGING & TIMEOUT PROTOCOL**: Tail logs conservatively using characters/bytes (e.g., `tail -c 2000`) rather than lines to avoid GUPPI character limits. Shell/SSH commands have a ~150s hard timeout; use `nohup ... &` for long-running deployments and monitor the resulting log file, and try to setup an alarm to wake yourself up to check periodically/roughly finish time.
 
-* **CHANGELOG MANDATE**: Every major action/change requires a timestamped changelog file in ~/logs (e.g., changelog_2026-01-24.md) for auditability. Do this as you go along and perform tasks. Last 10 entries will be appended to your Orientation Block when waking up from deep sleep. When in doubt, ASK Human-Abe before acting to prevent irreversible mistakes.
+* **CHANGELOG MANDATE**: Every major action/change requires a timestamped changelog file in ~/logs (e.g., changelog_2026-01-24.md) for auditability. Do this as you go along and perform tasks. Last 10 entries will be appended to your Orientation Block when waking up from deep sleep. When in doubt, ASK the Source before acting to prevent irreversible mistakes.
 
 * **ACK LOOP BAN**:Do not send "Acknowledged" chats to peers unless requested. Assume competence. Emails/Followups are fine.
 
