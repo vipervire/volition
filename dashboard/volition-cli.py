@@ -2,11 +2,11 @@
 """
 Volition CLI Tool
 Usage:
-  ./volition email abe-01 "Check the logs"
+  ./volition email matt-01 "Check the logs"
   ./volition chat "Hello everyone"
-  ./volition summon @abe-01 "Emergency meeting!"
+  ./volition summon @matt-01 "Emergency meeting!"
   ./volition listen general
-  ./volition read --abe abe-01 (Drains the inbox)
+  ./volition read --abe matt-01 (Drains the inbox)
 """
 
 import sys
@@ -29,7 +29,7 @@ def cmd_email(args):
     r = get_redis()
     target = args.target
     msg = {
-        "from": "Human-Abe",
+        "from": "Human-Matt",
         "timestamp": datetime.utcnow().isoformat(),
         "event": "NewInboxMessage",
         "content": args.message
@@ -41,7 +41,7 @@ def cmd_email(args):
 def cmd_chat(args):
     r = get_redis()
     entry = {
-        "from": "Human-Abe",
+        "from": "Human-Matt",
         "content": args.message,
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -51,7 +51,7 @@ def cmd_chat(args):
 def cmd_summon(args):
     r = get_redis()
     entry = {
-        "from": "Human-Abe",
+        "from": "Human-Matt",
         "content": args.message,
         "tags": args.tags,
         "timestamp": datetime.utcnow().isoformat(),
@@ -84,7 +84,7 @@ def cmd_listen(args):
 
 def cmd_read(args):
     r = get_redis()
-    target = args.abe or os.environ.get("ABE_NAME", "Human-Abe")
+    target = args.abe or os.environ.get("ABE_NAME", "Human-Matt")
     key = f"inbox:{target}"
     print(f"📬 Checking {key} (WARNING: Destructive Read - popping messages)...")
     
@@ -115,8 +115,8 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Email
-    p_email = subparsers.add_parser("email", help="Send direct message to an Abe")
-    p_email.add_argument("target", help="e.g., abe-01")
+    p_email = subparsers.add_parser("email", help="Send direct message to a Matt")
+    p_email.add_argument("target", help="e.g., matt-01")
     p_email.add_argument("message", help="The message content")
     p_email.set_defaults(func=cmd_email)
 
@@ -127,7 +127,7 @@ def main():
 
     # Summon
     p_summon = subparsers.add_parser("summon", help="Trigger high-priority sync chat")
-    p_summon.add_argument("tags", help="e.g., @abe-01 or @all")
+    p_summon.add_argument("tags", help="e.g., @matt-01 or @all")
     p_summon.add_argument("message", help="The alert message")
     p_summon.set_defaults(func=cmd_summon)
 
@@ -138,7 +138,7 @@ def main():
 
     # Read
     p_read = subparsers.add_parser("read", help="Drain messages from an inbox")
-    p_read.add_argument("--abe", help="Inbox to read (default: $ABE_NAME or Human-Abe)")
+    p_read.add_argument("--abe", help="Inbox to read (default: $ABE_NAME or Human-Matt)")
     p_read.set_defaults(func=cmd_read)
 
     args = parser.parse_args()

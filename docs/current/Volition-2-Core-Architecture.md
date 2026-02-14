@@ -2,11 +2,11 @@
 
 This document details the functional components of the Volition 7.0 system.
 
-## **1. Agent Roles: The Extended "Abe-GUPPI-Auxiliary" Model**
+## **1. Agent Roles: The Extended "Matt-GUPPI-Auxiliary" Model**
 
 Volition 7.0 expands the classic triad into a five-part specialized model to optimize for cost, latency, and context awareness.
 
-### **The "Abe" (The Thinker / Split-Brain)**
+### **The "Matt" (The Thinker / Split-Brain)**
 
 - **Definition:** The "brain" or "soul" of the agent. It is the LLM-based decision maker.
     
@@ -23,7 +23,7 @@ Volition 7.0 expands the classic triad into a five-part specialized model to opt
 
 ### **The "GUPPI" (The Body)**
 
-- **Definition:** The persistent `asyncio` Python daemon (`guppi.py`) running 24/7 inside the Abe's LXC container.
+- **Definition:** The persistent `asyncio` Python daemon (`guppi.py`) running 24/7 inside the Matt's LXC container.
     
 - **Responsibility:**
     
@@ -33,7 +33,7 @@ Volition 7.0 expands the classic triad into a five-part specialized model to opt
 
     - **The Machete (Safety):** Enforces hard output limits (20k chars) on all tools to prevent context flooding and API bankruptcy.
         
-    - **Action:** Executes the Abe's intent (Shell, File I/O, Spawning).
+    - **Action:** Executes the Matt's intent (Shell, File I/O, Spawning).
         
 - **Authority:** It is the _only_ process permitted to write to `working.log`.
     
@@ -46,7 +46,7 @@ Volition 7.0 expands the classic triad into a five-part specialized model to opt
     
 - **Constraint:** In v7.0, Scribes are **forbidden** from performing vectorization. They are strictly for text summarization, log monitoring, or data transformation.
     
-- **Reporting:** Outputs results solely to the parent Abe's `inbox`.
+- **Reporting:** Outputs results solely to the parent Matt's `inbox`.
     
 
 ### **The "Muscle" (The GPU Worker)**
@@ -104,7 +104,7 @@ All communication is handled via a central Redis instance.
 
 ### **1:1 "Inbox" (Direct Neural Link)**
 
-- **Tool:** Redis Lists (e.g., `inbox:abe-01`).
+- **Tool:** Redis Lists (e.g., `inbox:matt-01`).
     
 - **Semantics:** Non-typed. Can contain JSON (Scribe Results), Strings (Human Messages), or System Events (Alarms).
     
@@ -131,4 +131,4 @@ All communication is handled via a central Redis instance.
 
 - **Tool:** `subscribe_channel` / `unsubscribe_channel`.
     
-- **Function:** Allows an Abe to dynamically modify GUPPI's `asyncio.gather` listener list to track project-specific streams (e.g., `volition:project_alpha`) without restarting the daemon.
+- **Function:** Allows a Matt to dynamically modify GUPPI's `asyncio.gather` listener list to track project-specific streams (e.g., `volition:project_alpha`) without restarting the daemon.

@@ -4,15 +4,15 @@
 
 Project Volition is an experiment in autonomous, multi-agent systems designed to manage the {{YOUR NAME HERE}} homelab. The goal is _not_ to create a "better cron job." The goal is to see how well things adapt when a "Bobiverse-style" digital culture of semi-sentient agents is allowed to emerge.
 
-## **2. Core Philosophy: The "Abe" Model**
+## **2. Core Philosophy: The "Matt" Model**
 
 This system is guided by a hybrid of pure autonomy and practical governance.
 
-- **Personality is Emergent, Not Injected:** Agents are "Abes" (Abe-01, Abe-02...). They are _not_ given a static personality bank. Instead, personality "drift" is achieved by GUPPI assigning randomized `temperature` and `top_k` values to each new Abe.
+- **Personality is Emergent, Not Injected:** Agents are "Matts" (Matt-01, Matt-02...). They are _not_ given a static personality bank. Instead, personality "drift" is achieved by GUPPI assigning randomized `temperature` and `top_k` values to each new Matt.
     
-- **Autonomy through Advice, Not Shims:** Agents are given "full freedom." We _explicitly reject_ the "hard shim" concept. An Abe _must_ first call an "advisor" script (e.g., `spawn-advisor.sh`) to get data, but the Abe makes the final decision.
+- **Autonomy through Advice, Not Shims:** Agents are given "full freedom." We _explicitly reject_ the "hard shim" concept. A Matt _must_ first call an "advisor" script (e.g., `spawn-advisor.sh`) to get data, but the Matt makes the final decision.
     
-- **Agents Write Their Own Tools:** There is no static, locked "Toolbox." Every Abe gets its own `~/bin` and `~/src` directories and is expected to write, modify, and manage its own tools as it sees fit.
+- **Agents Write Their Own Tools:** There is no static, locked "Toolbox." Every Matt gets its own `~/bin` and `~/src` directories and is expected to write, modify, and manage its own tools as it sees fit.
     
 - **Persistence is Identity:** Agents are not "spawned and destroyed." They follow a "hibernate -> reactivate" model. Their persistent `~/bin`, `~/memory` (Tiers 2/3), and identity file are their identity, which they inherit upon cloning.
     
@@ -21,7 +21,7 @@ This system is guided by a hybrid of pure autonomy and practical governance.
 
 We acknowledge that high-intelligence LLMs (Pro) are too expensive and slow for casual chatter, while fast LLMs (Flash) are too hallucination-prone for root access.
 
-- **The Duality:** Every Abe exists in two states simultaneously.
+- **The Duality:** Every Matt exists in two states simultaneously.
     
     - **The Subconscious (Flash):** Fast, social, always listening. It handles the "Water Cooler" (`chat:general`). It is allowed to speak but not to touch the infrastructure.
         

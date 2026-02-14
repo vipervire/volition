@@ -11,7 +11,7 @@ Purpose:
      (Replaces v6.4 Inbox Broadcasting for Ambient Awareness).
 
 Features:
-  - Auto-discovery of Abes via 'volition:heartbeat'.
+  - Auto-discovery of Matts via 'volition:heartbeat'.
   - Uses Ollama for summarization to save API costs.
   - v6.4: Session reuse, Participant Filtering.
   - v7.0: Temporal Metadata (start_ts/end_ts) for Orientation logic.
@@ -50,7 +50,7 @@ OPENROUTER_MODEL_SUMMARIZE = os.environ.get(
 BURST_SILENCE_THRESHOLD = 300.0  # Seconds of silence to consider a conversation "finished"
 BURST_MIN_MESSAGES = 3          # Don't summarize single stray messages
 MAX_CHAT_BUFFER = 100           # Safety: Force summary if buffer exceeds this
-HEARTBEAT_TTL = 300             # How long to remember an Abe after last heartbeat
+HEARTBEAT_TTL = 300             # How long to remember a Matt after last heartbeat
 
 # v7.0 Stream Key
 DIGEST_STREAM_KEY = "volition:social_digests"
@@ -75,23 +75,23 @@ class SocialRouter:
         self.chat_cursor = "$" # Start reading from end of stream
 
     async def update_active_abes(self, heartbeat_data):
-        """Updates the list of known active Abes from heartbeat stream."""
+        """Updates the list of known active Matts from heartbeat stream."""
         try:
-            # heartbeat payload example: {"abe": "abe-01", "ts": "...", ...}
+            # heartbeat payload example: {"abe": "matt-01", "ts": "...", ...}
             abe = heartbeat_data.get("abe")
             if abe:
                 if abe not in self.active_abes:
-                    logger.info(f"Discovered new Abe: {abe}")
+                    logger.info(f"Discovered new Matt: {abe}")
                 self.active_abes[abe] = time.time()
         except Exception as e:
             logger.error(f"Heartbeat parse error: {e}")
 
     async def prune_abes(self):
-        """Removes Abes we haven't heard from in a while."""
+        """Removes Matts we haven't heard from in a while."""
         now = time.time()
         dead = [abe for abe, ts in self.active_abes.items() if now - ts > HEARTBEAT_TTL]
         for d in dead:
-            logger.info(f"Abe timed out: {d}")
+            logger.info(f"Matt timed out: {d}")
             del self.active_abes[d]
 
     async def generate_summary(self, session, conversation_text):

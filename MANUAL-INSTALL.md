@@ -10,7 +10,7 @@ This guide assumes you are comfortable with Linux, systemd, Redis, SSH, and Pyth
 
 Volition is intentionally split across multiple machines and trust domains.
 
-**Cognitive agents (Abes)** run in isolated Proxmox LXC containers.
+**Cognitive agents (Matts)** run in isolated Proxmox LXC containers.
 All coordination happens through Redis.
 Heavy compute and human-facing tools live outside the containers.
 
@@ -18,7 +18,7 @@ Minimum components:
 
 * Proxmox VE host
 * Redis (LAN-reachable, authenticated)
-* One Abe container (abe-01)
+* One Matt container (matt-01)
 * GPU Worker (embeddings + summarization)
 * Ear (social awareness)
 
@@ -68,15 +68,15 @@ PONG
 
 ---
 
-## 2. Abe Container (Cognitive Agent)
+## 2. Matt Container (Cognitive Agent)
 
-Each Abe runs inside a dedicated Proxmox LXC container.
+Each Matt runs inside a dedicated Proxmox LXC container.
 
 ### Required filesystem layout inside the container
 
-When you `pct enter` an Abe, the following **must exist**:
+When you `pct enter` an Matt, the following **must exist**:
 
-The Docs must contain 0.0-Abe-Genesis_Prompt, 98-source_profile.md, 99-current_services.md, and Volition-1 through Volition-8 documentation.
+The Docs must contain 0.0-Matt-Genesis_Prompt, 98-source_profile.md, 99-current_services.md, and Volition-1 through Volition-8 documentation.
 
 ```
 /root
@@ -85,8 +85,8 @@ The Docs must contain 0.0-Abe-Genesis_Prompt, 98-source_profile.md, 99-current_s
 ├── logs/
 ├── src/
 ├── .ssh/
-├── .abe-identity
-├── .abe-clipboard-<abe-name>.md
+├── .matt-identity
+├── .matt-clipboard-<matt-name>.md
 ├── working.log
 ├── communications.log
 ├── todo.db
@@ -123,7 +123,7 @@ The GPU Worker performs:
 * Tier-3 vector embeddings
 * Heavy summarization
 
-Without this service, Abes cannot form long-term memory.
+Without this service, Matts cannot form long-term memory.
 
 ### Location
 
@@ -175,7 +175,7 @@ The Ear service provides:
 * Orientation digests
 * Context recovery after sleep
 
-Without Ear, Abes wake up context-blind.
+Without Ear, Matts wake up context-blind.
 
 Deployment is identical to GPU Worker:
 
@@ -204,7 +204,7 @@ These services provide observability and safety.
 
 * Tracks agent liveness
 * Alerts humans via ntfy
-* Alerts Abe-01 for subsequent Abes' deaths.
+* Alerts Matt-01 for subsequent Matts' deaths.
 
 Install both services on the Redis or infra node:
 
@@ -225,7 +225,7 @@ systemctl enable --now volition-logger volition-heartbeat
 
 The dashboard is the **human control plane**.
 
-It runs **outside** Abe containers.
+It runs **outside** Matt containers.
 
 ### Requirements
 
@@ -277,7 +277,7 @@ Volition agents are powerful by design.
 
 Rules:
 
-* Abes may only access hosts listed in `/root/.ssh/config`
+* Matts may only access hosts listed in `/root/.ssh/config`
 * SSH keys must be installed manually on target machines
 * Passwordless sudo is recommended for effectiveness
 
@@ -292,7 +292,7 @@ After everything is running:
 * Redis responds to PING
 * GPU worker is active
 * Ear is active
-* Abe container has correct filesystem layout
+* Matt container has correct filesystem layout
 * `systemctl status guppi` is healthy
 * Dashboard shows heartbeats and logs
 

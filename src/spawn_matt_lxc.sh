@@ -2,7 +2,7 @@
 set -e
 
 # Volition Remote Spawner (LXC/Proxmox - "Stream" Clone Mode)
-# Usage: ./spawn_abe_lxc.sh --identity-file <path> --genesis-file <path>
+# Usage: ./spawn_matt_lxc.sh --identity-file <path> --genesis-file <path>
 
 # --- CONFIGURATION DEFAULTS ---
 # These are overwritten by genesis.py during installation
@@ -36,7 +36,7 @@ CHILD_NAME=$(echo "$NAMES" | cut -d'|' -f1)
 PARENT_NAME=$(echo "$NAMES" | cut -d'|' -f2)
 
 if [[ -z "$CHILD_NAME" ]]; then echo "Error: Could not extract 'name'."; exit 1; fi
-if [[ -z "$PARENT_NAME" || "$PARENT_NAME" == "Abe" || "$PARENT_NAME" == "Human-Abe" ]]; then
+if [[ -z "$PARENT_NAME" || "$PARENT_NAME" == "Matt" || "$PARENT_NAME" == "Human-Matt" ]]; then
 echo "Error: Parent '$PARENT_NAME' is invalid. Patient Zero must be manual."
 exit 1
 fi

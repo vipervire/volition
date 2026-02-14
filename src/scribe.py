@@ -12,7 +12,7 @@ Status: RELEASE 6.5.1
 - DEPRECATION: 'vectorize' mode is disabled. Use GUPPI GPU Offload.
 
 Usage:
-  python3 scribe.py --model google/gemini-3-flash-preview:thinking --prompt-file /tmp/p.txt --output-inbox inbox:abe-01 --meta '{"source": "log-1"}'
+  python3 scribe.py --model google/gemini-3-flash-preview:thinking --prompt-file /tmp/p.txt --output-inbox inbox:matt-01 --meta '{"source": "log-1"}'
 
 Dependencies:
   pip install redis google-genai aiohttp
@@ -57,7 +57,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - [SCRIBE] - %(level
 logger = logging.getLogger("scribe")
 
 async def push_result(redis_url: str, inbox: str, event_type: str, content: Any, meta: Dict = None):
-    """Pushes the final result to the parent Abe's inbox."""
+    """Pushes the final result to the parent Matt's inbox."""
     if meta is None:
         meta = {}
     
@@ -228,7 +228,7 @@ async def main():
             # v6.4 BREAKING CHANGE
             error_msg = "Critical: Local vectorization is disabled in Volition 6.4. Use GUPPI GPU Offload (Nomic)."
             logger.error(error_msg)
-            # We report failure back to inbox so Abe knows not to wait
+            # We report failure back to inbox so Matt knows not to wait
             await push_result(
                 args.redis_url,
                 args.output_inbox,

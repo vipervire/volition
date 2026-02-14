@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Volition Heartbeat Monitor (Hardened + Governance)
-Watches 'volition:heartbeat'. 
-1. If an Abe goes silent for > 3 minutes, triggers HIGH PRIORITY Ntfy alert.
-2. ALSO notifies Abe-01 (The Steward) via inbox so he can investigate.
+Watches 'volition:heartbeat'.
+1. If a Matt goes silent for > 3 minutes, triggers HIGH PRIORITY Ntfy alert.
+2. ALSO notifies Matt-01 (The Steward) via inbox so he can investigate.
 """
 
 import time
@@ -27,7 +27,7 @@ NTFY_ENABLED = bool(NTFY_TOKEN and NTFY_URL)
 
 # TUNING
 ALERT_THRESHOLD = 180        # Alert if silent for 3 minutes
-CHECK_INTERVAL = 10          # How often to check for dead Abes (approx)
+CHECK_INTERVAL = 10          # How often to check for dead Matts (approx)
 
 def send_alert(abe_name, last_seen_str):
     """Sends a high-priority panic alert to Humans."""
@@ -41,7 +41,7 @@ def send_alert(abe_name, last_seen_str):
             NTFY_URL,
             data=f"🚑 FLATLINE DETECTED: {abe_name} has not reported in since {last_seen_str}.",
             headers={
-                "Title": f"Abe Down: {abe_name}",
+                "Title": f"Matt Down: {abe_name}",
                 "Priority": "urgent",
                 "Tags": "skull,rotating_light",
                 "Authorization": f"Bearer {NTFY_TOKEN}"
@@ -53,9 +53,9 @@ def send_alert(abe_name, last_seen_str):
 
 
 def notify_steward(r, dead_abe, last_seen_str):
-    """Notifies Abe-01 that a peer has died."""
-    # Don't ask Abe-01 to investigate himself.
-    if dead_abe == "abe-01":
+    """Notifies Matt-01 that a peer has died."""
+    # Don't ask Matt-01 to investigate himself.
+    if dead_abe == "matt-01":
         return
 
     msg = {
@@ -64,12 +64,12 @@ def notify_steward(r, dead_abe, last_seen_str):
         "content": f"CRITICAL: Heartbeat lost for {dead_abe}. Last seen: {last_seen_str}. Investigate status immediately.",
         "priority": "high"
     }
-    
+
     try:
-        r.lpush("inbox:abe-01", json.dumps(msg))
-        print(f"[*] Notified Abe-01 to investigate {dead_abe}.")
+        r.lpush("inbox:matt-01", json.dumps(msg))
+        print(f"[*] Notified Matt-01 to investigate {dead_abe}.")
     except Exception as e:
-        print(f"Failed to notify Abe-01: {e}")
+        print(f"Failed to notify Matt-01: {e}")
 
 def main():
     print(f"[*] Heartbeat Monitor Active. Connecting to {REDIS_HOST}...")
@@ -84,11 +84,11 @@ def main():
         retry_on_timeout=True
     )
     
-    # State: { "abe-01": timestamp_float }
+    # State: { "matt-01": timestamp_float }
     known_abes = {}
-    
-    # We start at '$' (only new beats). 
-    # If you restart this monitor, it learns about alive Abes as they beat.
+
+    # We start at '$' (only new beats).
+    # If you restart this monitor, it learns about alive Matts as they beat.
     last_id = "$"
     
     while True:
@@ -106,20 +106,20 @@ def main():
                                 print(f"[+] Discovered new heartbeat: {abe}")
                             known_abes[abe] = time.time()
 
-            # 2. CHECK FOR DEAD ABES
+            # 2. CHECK FOR DEAD MATTS
             now = time.time()
             # Iterate copy to allow modification
             for abe, last_ts in list(known_abes.items()):
                 delta = now - last_ts
-                
+
                 if delta > ALERT_THRESHOLD:
                     # FLATLINE CONFIRMED
                     last_seen_str = datetime.fromtimestamp(last_ts, timezone.utc).strftime('%H:%M:%S UTC')
-                    
+
                     # Action 1: Alert Humans
                     send_alert(abe, last_seen_str)
-                    
-                    # Action 2: Alert Abe-01
+
+                    # Action 2: Alert Matt-01
                     notify_steward(r, abe, last_seen_str)
                     
                     # Remove from active monitoring to prevent alert spam

@@ -3,7 +3,7 @@
 *It is injected at Genesis as a baseline and is expected to evolve.*
 
 ## Current Status
-* **Process:** To add a rule here, discuss it in `chat:synchronous`. If the fleet agrees, _every abe must_ use `write_file` to append the rule in their own system.
+* **Process:** To add a rule here, discuss it in `chat:synchronous`. If the fleet agrees, _every matt must_ use `write_file` to append the rule in their own system.
 
 ### Fleet Rules
 
@@ -22,4 +22,4 @@
 ### The Fleet Roster Protocol
 *To prevent cognitive muddle, the active fleet's identities and host assignments are codified here. Any agent migration or name change must be updated in this file immediately.*
 
-*Location of Abes*: Populate this with abe-designation, their chosen name, and their stewardship when abes are spawned.
+*Location of Matts*: Populate this with matt-designation, their chosen name, and their stewardship when matts are spawned.
