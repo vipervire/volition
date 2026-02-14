@@ -8,13 +8,13 @@ GUPPI does not simply "wait for everything." It implements a **Refractory Schedu
 
 ### **Group A: Always Hot (Senses)**
 These inputs are monitored 24/7 and processed immediately, even during cooldowns.
-1. **Streams:** `xread(active_streams)`. Mentions (`@abe`) and Emergency Channels (`chat:synchronous`).
-2. **Internal Queue:** `blpop(internal:abe)`. RPC returns from GPU workers and Scribes.
+1. **Streams:** `xread(active_streams)`. Mentions (`@matt`) and Emergency Channels (`chat:synchronous`).
+2. **Internal Queue:** `blpop(internal:matt)`. RPC returns from GPU workers and Scribes.
 3. **Local Wakeup:** `asyncio.Event`. Triggers when a local subprocess finishes.
 
 ### **Group B: Refractory (Workload)**
 These inputs are only processed when the agent is **Cool** (not in a refractory period).
-1. **Inbox:** `blpop(inbox:abe-name)`. New tasks, emails, or non-urgent alerts.
+1. **Inbox:** `blpop(inbox:matt-name)`. New tasks, emails, or non-urgent alerts.
 2. **Alarm Clock:** `asyncio.sleep(next_task_delta)`. Scheduled tasks from `todo.db`.
 
 **The Cooldown Logic:**
@@ -63,15 +63,15 @@ GUPPI determines which "lobe" of the brain to activate based on the trigger even
 2. **API Call:** GUPPI sends the synthesized context to the selected model.
     
 3. **Escalation Check (The Safety Valve):**
-    
-    - If **Flash** is active but attempts to use a "Heavy Tool" (e.g., `shell`, `write_file`, `spawn_abe`), GUPPI **denies** the action.
-        
+
+    - If **Flash** is active but attempts to use a "Heavy Tool" (e.g., `shell`, `write_file`, `spawn_matt`), GUPPI **denies** the action.
+
     - **Escalation:** GUPPI immediately re-runs the Think Cycle using **Pro**, injecting a `[SYSTEM NOTICE]` explaining that the chat layer requested a privileged action.
         
 
 ### **Phase 3: Execution & Logging**
 
-1. **Intent Log:** GUPPI writes the `AbeTurn` (Status: Pending) to `working.log`.
+1. **Intent Log:** GUPPI writes the `MattTurn` (Status: Pending) to `working.log`.
     
 2. **Async Execution:**
     
@@ -82,10 +82,10 @@ GUPPI determines which "lobe" of the brain to activate based on the trigger even
     - **GPU Offload:** Pushed to `queue:gpu_heavy`.
         
 3. **Outcome Patching:**
-    
+
     - When the task completes (potentially seconds or minutes later), GUPPI wakes up (Local Wakeup).
-        
-    - It finds the pending `AbeTurn` in `working.log` and patches it with `Status: Completed` and the `Results`.
+
+    - It finds the pending `MattTurn` in `working.log` and patches it with `Status: Completed` and the `Results`.
         
 4. **Notification:** GUPPI pushes a `TaskCompleted` event to its _own_ inbox to trigger the next cognitive step.
     
@@ -97,8 +97,8 @@ Volition 7.0 bifurcates "Tasking" into Local (CPU) and Remote (GPU) workloads.
 ### **The Scribe (Local CPU)**
 
 - **Spawned By:** `spawn_scribe` tool or GUPPI Auto-Pruner.
-    
-- **Execution:** Runs as a child process of the Abe container.
+
+- **Execution:** Runs as a child process of the Matt container.
     
 - **Use Case:** Summarizing text, parsing logs, "Watching" a file.
     

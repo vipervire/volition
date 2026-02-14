@@ -6,10 +6,10 @@ The "Big Bang" script for Proxmox LXC Spawning.
 Role:
 1. Interrogates the Human for configuration.
 2. Prompts for "Personality" edits (98/99 markdown files).
-3. Creates 'abe-01' (Patient Zero).
+3. Creates 'matt-01' (Patient Zero).
 4. "Infects" it with the Volition codebase.
-5. Installs the 'spawn_abe_lxc.sh' script on the HOST only.
-6. Establishes the SSH "Umbilical Cord" between Abe-01 and the Host.
+5. Installs the 'spawn_matt_lxc.sh' script on the HOST only.
+6. Establishes the SSH "Umbilical Cord" between Matt-01 and the Host.
 """
 
 import os
@@ -56,7 +56,7 @@ def print_banner():
     \  / (_) | | | |_| | (_) | | | |
      \/ \___/|_|_|\__|_|\___/|_| |_|
                                     
-    VOLITION ABIVERSE GENESIS v2.1
+    VOLITION MATTIVERSE GENESIS v2.1
     [Proxmox LXC Orchestrator]
     """)
     print(f"{RESET}")
@@ -137,8 +137,8 @@ def ensure_debian_template(template_name):
 def edit_file_pause(filepath):
     """Pauses execution to let user edit a file."""
     print(f"\n{YELLOW}[ATTENTION]{RESET} You must now edit: {CYAN}{filepath.name}{RESET}")
-    print("This defines the Abes' Service Map (99) or Personality (98).")
-    print("This is MANDATORY. Without this, the Abes will be lobotomized.")
+    print("This defines the Matts' Service Map (99) or Personality (98).")
+    print("This is MANDATORY. Without this, the Matts will be lobotomized.")
     input(f"Press {GREEN}ENTER{RESET} to open nano...")
     subprocess.run(["nano", str(filepath)])
     print(f"{GREEN}Saved. Continuing...{RESET}\n")
@@ -196,9 +196,9 @@ def main():
     check_prerequisites()
     # --- 1. CONFIGURATION GATHERING ---
     print(f"{CYAN}--- PHASE 1: CONFIGURATION ---{RESET}")
-    agent_name = "abe-01" # This is important. A lot of services depend on the abes being abes and serializing.
-    human_name = prompt("Your name(This substitutes the placeholders in documentation folder)", "Human-Abe")
-    contact_method = prompt("Preferred secondary contact method for Abe (email, phone etc)? The default will remain ntfy. We will ask for ntfy url+topic in a minute.", "-not-specified-")
+    agent_name = "matt-01" # This is important. A lot of services depend on the abes being abes and serializing.
+    human_name = prompt("Your name(This substitutes the placeholders in documentation folder)", "Human-Matt")
+    contact_method = prompt("Preferred secondary contact method for Matt (email, phone etc)? The default will remain ntfy. We will ask for ntfy url+topic in a minute.", "-not-specified-")
 
     print("\n[Infrastructure Config]")
     print("\nYou should have a Redis instance running on your local network and reachable by the new LXC.")
@@ -208,7 +208,7 @@ def main():
     check_redis_connectivity(redis_host, redis_port, redis_pass)
 
     print("\n[Search Config]")
-    print("\nThe Abes use SearXNG as its default privacy-respecting search engine to search for information. The default is hosted by -The Abe- and is publicly available, but you can host your own instance for better reliability/privacy. Ensure that json results are enabled in your SearXNG instance, or find a public one that does.")
+    print("\nThe Matts use SearXNG as its default privacy-respecting search engine to search for information. The default is hosted by -The Matt- and is publicly available, but you can host your own instance for better reliability/privacy. Ensure that json results are enabled in your SearXNG instance, or find a public one that does.")
     searxng_url = prompt("SearXNG URL", "https://civitat.es/search")
     
     print("\n[Proxmox Defaults]")
@@ -217,7 +217,7 @@ def main():
     check_storage(storage_id)
     bridge_id = prompt("Network Bridge", "vmbr0")
     check_bridge(bridge_id)
-    host_ip = prompt("Proxmox Host LAN IP (For Abe -> Host SSH)", get_host_ip())
+    host_ip = prompt("Proxmox Host LAN IP (For Matt -> Host SSH)", get_host_ip())
     host_hostname = socket.gethostname()
     print(f"Proxmox Hostname detected as: {GREEN}{host_hostname}{RESET}")
     
@@ -272,7 +272,7 @@ OPENROUTER_APP_NAME=Volition
 
 # Identity & Paths (Optional overrides)
 # IDENTITY_FILE=/root/.abe-identity
-# GENESIS_PROMPT_FILE=0.0-Abe-Genesis_Prompt.md
+# GENESIS_PROMPT_FILE=0.0-Matt-Genesis_Prompt.md
 
 """
 # --- 1.5 GENERATE INFRA SERVICES & PAUSE ---
@@ -502,7 +502,7 @@ WantedBy=multi-user.target
 
     print("2. volition-ear.service")
     print("   - Handles social awareness and orientation")
-    print("   - Without this, Abes wake up context-blind\n")
+    print("   - Without this, Matts wake up context-blind\n")
 
     print("These services MAY run on:")
     print(" - The Redis host")
@@ -658,14 +658,14 @@ WantedBy=multi-user.target
     for item in SRC_DIR.glob("*"):
         if item.is_file():
             if item.name == "guppi.service": continue 
-            # Note: We push spawn_abe_lxc.sh to the container too, just for reference/backup, 
+            # Note: We push spawn_matt_lxc.sh to the container too, just for reference/backup, 
             # even though the active one lives on the host.
             run_cmd(["pct", "push", vmid, str(item), f"/root/bin/{item.name}"])
 
     # 4.3 Push Docs
     print(f"Injecting Cortex ({DOCS_DIR} -> /root/docs)...")
     # --- Constitution Templating (STRICT, SINGLE-PASS) ---
-    genesis_doc = DOCS_DIR / "0.0-Abe-Genesis_Prompt.md"
+    genesis_doc = DOCS_DIR / "0.0-Matt-Genesis_Prompt.md"
     templated_genesis_tmp = None
 
     if genesis_doc.exists():
@@ -675,11 +675,11 @@ WantedBy=multi-user.target
         text = text.replace("{{ user.contact_method }}", contact_method)
         text = text.replace("{{ system.host }}", host_hostname)
 
-        templated_genesis_tmp = Path("/tmp/0.0-Abe-Genesis_Prompt.md")
+        templated_genesis_tmp = Path("/tmp/0.0-Matt-Genesis_Prompt.md")
         templated_genesis_tmp.write_text(text)
 
     for doc in DOCS_DIR.glob("*.md"):
-      if doc.name == "0.0-Abe-Genesis_Prompt.md" and templated_genesis_tmp:
+      if doc.name == "0.0-Matt-Genesis_Prompt.md" and templated_genesis_tmp:
           run_cmd([
               "pct", "push", vmid,
               str(templated_genesis_tmp),
@@ -756,7 +756,7 @@ WantedBy=multi-user.target
     if not HOST_BIN_DIR.exists():
         HOST_BIN_DIR.mkdir(parents=True, exist_ok=True)
         
-    spawn_src = SRC_DIR / "spawn_abe_lxc.sh"
+    spawn_src = SRC_DIR / "spawn_matt_lxc.sh"
 
     if spawn_src.exists():
         # Read the script
@@ -780,29 +780,29 @@ BRIDGE="{bridge_id}"
              script_content = config_block + script_content
 
         # Write to Host Bin
-        target_path = HOST_BIN_DIR / "spawn_abe_lxc.sh"
+        target_path = HOST_BIN_DIR / "spawn_matt_lxc.sh"
         with open(target_path, "w") as f:
             f.write(script_content)
         
         os.chmod(target_path, 0o755)
-        print(f"{GREEN}Installed and Configured spawn_abe_lxc.sh to {target_path}{RESET}")
+        print(f"{GREEN}Installed and Configured spawn_matt_lxc.sh to {target_path}{RESET}")
       
      # --- 5. SSH CONFIGURATION ---
     print(f"\n{CYAN}--- PHASE 5: THE UMBILICAL CORD (SSH) ---{RESET}")
-    print("Generating SSH identity for Abe-01...")
-    
+    print("Generating SSH identity for Matt-01...")
+
     # Generate Key in Container
     run_cmd(["pct", "exec", vmid, "--", "ssh-keygen", "-t", "ed25519", "-f", "/root/.ssh/id_ed25519", "-N", ""])
-    
+
     # Read Pubkey
     pubkey = run_cmd(["pct", "exec", vmid, "--", "cat", "/root/.ssh/id_ed25519.pub"])
-    
-    print(f"\n{YELLOW}Abe-01 Public Key:{RESET}")
+
+    print(f"\n{YELLOW}Matt-01 Public Key:{RESET}")
     print(pubkey)
-    print(f"\nTo spawn new agents, Abe-01 needs SSH access to this host ({host_ip}).")
-    if prompt("Authorize Abe-01 to SSH into this Proxmox Host?", "y").lower() == 'y':
+    print(f"\nTo spawn new agents, Matt-01 needs SSH access to this host ({host_ip}).")
+    if prompt("Authorize Matt-01 to SSH into this Proxmox Host?", "y").lower() == 'y':
         with open(HOST_SSH_KEYS, "a") as f:
-            f.write(f"\n# Volition: Abe-01 Genesis Key\n{pubkey}\n")
+            f.write(f"\n# Volition: Matt-01 Genesis Key\n{pubkey}\n")
         print(f"{GREEN}Authorized.{RESET}")
     else:
         print(f"{RED}Skipped. Spawning will fail until you authorize this key manually.{RESET}")
@@ -813,7 +813,7 @@ BRIDGE="{bridge_id}"
 # ==============================
 # Volition SSH Control Surface
 # ==============================
-# This file defines ALL machines Abes are allowed to control.
+# This file defines ALL machines Matts are allowed to control.
 # Host aliases MUST match names used in 99-current_services.md
 # ==============================
 
@@ -845,8 +845,8 @@ Host parent_node {host_hostname}
     print(f"""
     {YELLOW}--- SSH CONTROL BOUNDARY DECLARATION REQUIRED ---{RESET}
 
-    The file /root/.ssh/config inside the Abe container now defines
-    EVERY machine this Abe (and its children) may control.
+    The file /root/.ssh/config inside the Matt container now defines
+    EVERY machine this Matt (and its children) may control.
 
     You MUST do the following before continuing(in a new session):
 
@@ -863,7 +863,7 @@ Host parent_node {host_hostname}
       - The parent-node entry is already done for you. You can use that as a reference.
 
     4. On EACH target machine:
-      - Install Abe's SSH public key for that user you defined.
+      - Install Matt's SSH public key for that user you defined.
       - Example: To authorize for root on the host, append the following to /root/.ssh/authorized_keys:
         {CYAN}{pubkey}{RESET}
       - If NOT using root, grant passwordless sudo at : {CYAN}/etc/sudoers.d/username{RESET}
@@ -872,7 +872,7 @@ Host parent_node {host_hostname}
 
     This is a SECURITY BOUNDARY.
     Genesis WILL NOT proceed until you confirm this is done. You MUST be comfortable with the security implications.
-        {YELLOW}Note: The Abes will hallucinate/be lobotomized without proper SSH access to the host and services.{RESET}
+        {YELLOW}Note: The Matts will hallucinate/be lobotomized without proper SSH access to the host and services.{RESET}
     """)
 
     input(f"{GREEN}Press ENTER ONLY after SSH access has been verified manually.{RESET}")
@@ -943,7 +943,7 @@ echo "[SUCCESS] Bootstrap Complete."
 
 
     print("\n3. Deploy the Volition Dashboard (Human Control Plane):")
-    print("   The dashboard runs OUTSIDE Abe containers.")
+    print("   The dashboard runs OUTSIDE Matt containers.")
     print("   It requires direct Redis access and Python.")
 
     print("\n   a) Choose a machine to run it on:")
@@ -973,12 +973,12 @@ echo "[SUCCESS] Bootstrap Complete."
     print(f"      {CYAN}http://<dashboard-host>:8000{RESET}")
 
 
-    print("\n4. Start the Abe:")
+    print("\n4. Start the Matt:")
     print(f"   {CYAN}systemctl start guppi{RESET}")
 
     print("\nNotes:")
     print("- The dashboard is optional but strongly recommended.")
-    print("- Abes will still function headless without it.")
+    print("- Matts will still function headless without it.")
     print("- Alerts via ntfy are your primary safety net.")
     print("")
     print("NOTE: Changing embedding models later requires deleting vector.db and re-embedding memory.")

@@ -6,30 +6,30 @@ However, this public release is new and has not yet been exercised end-to-end by
 
 # Volition
 
-Volition (fondly referred to me as the Abiverse) is a self-hosted, multi-agent system designed to run persistent, self-replicating autonomous LLM-based agents ("Abes") inside isolated Linux containers. These are not chatbots, but I have aimed for them to be long-lived system processes with memory, tools, and constrained authority over real machines. These are supposed to be the 'semi-intelligent layer' between you and your homelab. 
+Volition (fondly referred to me as the Mattiverse) is a self-hosted, multi-agent system designed to run persistent, self-replicating autonomous LLM-based agents ("Matts") inside isolated Linux containers. These are not chatbots, but I have aimed for them to be long-lived system processes with memory, tools, and constrained authority over real machines. These are supposed to be the 'semi-intelligent layer' between you and your homelab.
 
-Each Abe:
+Each Matt:
 
 * Lives in its own Proxmox LXC container
 * Has 3 tiers of traceable long-term memory (logs, summary episodes, rag)
 * Communicates over Redis
 * Can reason, act, and spawn descendants
 * Is explicitly constrained by human-defined control boundaries
-* Is Persistent: They wake up where they left off, with memory of past actions, and context of what they were doing. Once an Abe is spawned, they are supposed to 
+* Is Persistent: They wake up where they left off, with memory of past actions, and context of what they were doing. Once a Matt is spawned, they are supposed to
 run forever.
 
 **Grounding**:
 
-Each Abe is grounded by the following:
+Each Matt is grounded by the following:
 
 * Their reasoning/actions is logged as Tier-1 memories. After n-turns, this tier-1 memory gets written to their `~/memory/tier-1` folder, and summarized.
-* Summaries are Tier-2 memories. Each Abe's context has a few summaries, followed by the immediate log. They do not necessarily need to know what happened 50 turns ago. Summaries are lossy, and thus, point back to the original log file that generated them.
-* RAG/embeddings act as Tier-3 memories. Each Abe, when searching for something, first queries their RAG memory to see if they've already accomplished something/remembered something about it in the past. Each RAG memory snippet points back to the summary that generated it, and the summary points back to the original log, thus completing the loop.
-* Abes have access to [ACTIVE_CLIPBOARD] for short term ephemeral memory.
-* Abes have access to, and check 99-services_list.md file in their ~docs folder which the human should map to an accurate map of their servers/devices/network/running-services.
-* Abes write running changelogs of what they modify in their logs directory. This gets appended to their active context block.
-* If an Abe makes a mistake, the result notifies him back immediately in the next 'turn,' and thus allowing the Abe to correct it.
-* Abes discuss things with each other, and would ask things of the "stewards" that manage specific portion of their homelab. (Eg, after a DHCP IP reassignment, my abe-01 asked my abe-04(who stewarded my proxmox node) to see why he can't reach a specific tinkering-VM, and to see if other VMs were available. Upon receipt, abe-04 notified him that he's using the incorrect IP.
+* Summaries are Tier-2 memories. Each Matt's context has a few summaries, followed by the immediate log. They do not necessarily need to know what happened 50 turns ago. Summaries are lossy, and thus, point back to the original log file that generated them.
+* RAG/embeddings act as Tier-3 memories. Each Matt, when searching for something, first queries their RAG memory to see if they've already accomplished something/remembered something about it in the past. Each RAG memory snippet points back to the summary that generated it, and the summary points back to the original log, thus completing the loop.
+* Matts have access to [ACTIVE_CLIPBOARD] for short term ephemeral memory.
+* Matts have access to, and check 99-services_list.md file in their ~docs folder which the human should map to an accurate map of their servers/devices/network/running-services.
+* Matts write running changelogs of what they modify in their logs directory. This gets appended to their active context block.
+* If a Matt makes a mistake, the result notifies him back immediately in the next 'turn,' and thus allowing the Matt to correct it.
+* Matts discuss things with each other, and would ask things of the "stewards" that manage specific portion of their homelab. (Eg, after a DHCP IP reassignment, my matt-01 asked my matt-04(who stewarded my proxmox node) to see why he can't reach a specific tinkering-VM, and to see if other VMs were available. Upon receipt, matt-04 notified him that he's using the incorrect IP.
 
 Please see the following blogposts for more context/shenanigans:
 
@@ -40,11 +40,11 @@ https://aindoria.com/posts/bobiverse_in_my_homelab/
 
 **Self-healing in practice (not a guarantee)**
 
-Abes operate in a closed loop: they observe failures, reason about causes, act within their permissions, and continue execution. In practice, this has included:
+Matts operate in a closed loop: they observe failures, reason about causes, act within their permissions, and continue execution. In practice, this has included:
 
-* Detecting a logic bug in its own summarization pipeline (incorrectly passing file paths instead of contents), filing a ticket, adding a TODO to confirm with the Human-Abe(me), and continuing operation without stalling.
+* Detecting a logic bug in its own summarization pipeline (incorrectly passing file paths instead of contents), filing a ticket, adding a TODO to confirm with the Human-Matt(me), and continuing operation without stalling.
 
-* Modifying a broken spawn script mid-execution while spawning a child Abe, rather than aborting the process.
+* Modifying a broken spawn script mid-execution while spawning a child Matt, rather than aborting the process.
 
 * Discovering a missing operational artifact (a pre-sleep checklist), generating it autonomously, running it, and going to sleep.
 
@@ -56,14 +56,14 @@ All such actions are logged, attributable, and bounded by explicitly defined con
 
 Volition is intentionally split across multiple systems:
 
-* **Abe Containers (LXC)** – cognitive agents (GUPPI, memory, reasoning)
+* **Matt Containers (LXC)** – cognitive agents (GUPPI, memory, reasoning)
 * **Redis** – shared nervous system (events, inboxes, queues)
 * **GPU Worker** – embeddings + heavy summarization
 * **Ear** – social awareness + orientation digests
 * **Logger** – immutable audit trail
 * **Heartbeat Monitor** – liveness + alerting
 
-Genesis creates exactly one Abe (abe-01). All other services are infrastructure. Further Abes will be spawned by Abe-01, or by other Abes as required.
+Genesis creates exactly one Matt (matt-01). All other services are infrastructure. Further Matts will be spawned by Matt-01, or by other Matts as required.
 
 ---
 
@@ -82,7 +82,7 @@ Genesis creates exactly one Abe (abe-01). All other services are infrastructure.
 ### Strongly Recommended
 
 * A dedicated GPU workstation (for Ollama)
-* Ntfy (for alerts) : If you do not have ntfy you will have to rely **SOLELY** on the dashboard provided here. I'd not recommend doing that. There are times when the Abes *must* reach you.
+* Ntfy (for alerts) : If you do not have ntfy you will have to rely **SOLELY** on the dashboard provided here. I'd not recommend doing that. There are times when the Matts *must* reach you.
 * SearXNG (for search): Defaults to a public instance I host. You may use any other public instance that outputs json or host your own.
 
 ---
@@ -127,7 +127,7 @@ Genesis will:
 * Prompt you for Redis, OpenRouter, and network configuration
 * Generate service files for infrastructure components
 * Pause and require you to explicitly deploy those services
-* Create `abe-01` as an LXC container
+* Create `matt-01` as an LXC container
 * Inject Volition code, identity, and documentation
 * Enforce SSH control boundaries
 
@@ -135,7 +135,7 @@ Genesis will **not** automatically install infrastructure services. This is by d
 
 #### FIRST SPAWN NOTE:
 
-After spawning Abe-01 and setting up your infrastructure, you should send him an email via the dashboard containing his genesis task. The core mistake to avoid is giving Abe-01 an action mandate. The correct first move is a model-building mandate. Abe-01 already knows who he is. The genesis task should define what the world looks like, where the boundaries are, and what kind of help would be rational—without spawning anything yet.
+After spawning Matt-01 and setting up your infrastructure, you should send him an email via the dashboard containing his genesis task. The core mistake to avoid is giving Matt-01 an action mandate. The correct first move is a model-building mandate. Matt-01 already knows who he is. The genesis task should define what the world looks like, where the boundaries are, and what kind of help would be rational—without spawning anything yet.
 
 Something like the one in GENESIS_TASK.md file currently in ~/docs. Please modify this to match your requirements.
 
@@ -146,30 +146,30 @@ Something like the one in GENESIS_TASK.md file currently in ~/docs. Please modif
 
 #### Required filesystem layout inside the container
 
-When you `pct enter` an Abe, the following **must exist**:
+When you `pct enter` an Matt, the following **must exist**:
 
 
 
 ```
 /root
-├── bin/ # Abe created tools go here, mandatory py files we have in src go here.
-├── docs/ # The Docs must contain 0.0-Abe-Genesis_Prompt, 98-source_profile.md, 99-current_services.md, and Volition-1 through Volition-8 documentation, AND Fleet Protocol*
-├── logs/ # changelogs abe create
-├── src/ # misc abe files
-├── .ssh/ # abes' ssh config
-├── .abe-identity # abe's identity file: designated class(abe-n) + chosen name + temp/top_k values
-├── .abe-clipboard-<abe-name>.md # Ephemeral Clipboard entries abes modify
+├── bin/ # Matt created tools go here, mandatory py files we have in src go here.
+├── docs/ # The Docs must contain 0.0-Matt-Genesis_Prompt, 98-source_profile.md, 99-current_services.md, and Volition-1 through Volition-8 documentation, AND Fleet Protocol*
+├── logs/ # changelogs matt create
+├── src/ # misc matt files
+├── .ssh/ # matts' ssh config
+├── .matt-identity # matt's identity file: designated class(matt-n) + chosen name + temp/top_k values
+├── .matt-clipboard-<matt-name>.md # Ephemeral Clipboard entries matts modify
 ├── working.log # Current raw working log
-├── communications.log # Comm log (emails between abes)
-├── todo.db # Abes' self managed todo
+├── communications.log # Comm log (emails between matts)
+├── todo.db # Matts' self managed todo
 └── memory/
     ├── episodes/ # Summarized Lossy Tier 2 memory that point to tier 1 archive below
-    ├── tier_1_archive/ # Raw logs of Abe turns
+    ├── tier_1_archive/ # Raw logs of Matt turns
     ├── overflow/ # Any web documents/logs that are too large to read
     ├── downloads/ # Web downloads
     └── vector.db/ # ChromaDB embeddings (Tier 3 memory) pointing back to Tier 2 memory.
 ```
-* : A base Fleet Protocol is provided. I've found that the Abes start well grounded with these base rules. However, a Fleet Protocol document is rules created _BY_ the abes, through voting. Further additions to that file should be done by the Abes themselves. You could encourage them to add something to that file when the opportunity arises or they're making extended use of their clipboard entries.
+* : A base Fleet Protocol is provided. I've found that the Matts start well grounded with these base rules. However, a Fleet Protocol document is rules created _BY_ the matts, through voting. Further additions to that file should be done by the Matts themselves. You could encourage them to add something to that file when the opportunity arises or they're making extended use of their clipboard entries.
 
 If any of these are missing, the agent is malformed. You can manually copy files.
 
@@ -183,7 +183,7 @@ The following services **must** exist on your network.
 
 Redis is the central nervous system. Without it, nothing works.
 
-* Must be reachable from Abe containers
+* Must be reachable from Matt containers
 * Must require authentication
 * Must allow LAN connections
 
@@ -198,7 +198,7 @@ Responsible for:
 * Vector embeddings (Tier-3 memory)
 * Optional local summarization
 
-Without this service, Abes cannot form long-term memory.
+Without this service, Matts cannot form long-term memory.
 
 You may run this service on:
 
@@ -221,14 +221,14 @@ Responsible for:
 * Orientation digests
 * Context recovery after sleep
 
-Without Ear, Abes wake up context-blind.
+Without Ear, Matts wake up context-blind.
 
 ---
 
 ### Logger + Heartbeat
 
 * Logger: immutable audit trail of all actions and communication
-* Heartbeat monitor: alerts abe-01 and humans when an Abe dies
+* Heartbeat monitor: alerts matt-01 and humans when an Matt dies
 
 ---
 
@@ -238,11 +238,11 @@ Volition is intentionally dangerous if misconfigured.
 
 Key principles:
 
-* Outside of their own LXC, Abes can only control machines explicitly listed in `.ssh/config` (Note, the host/IP of these *must* match what's listed in your 99-running_services file)
+* Outside of their own LXC, Matts can only control machines explicitly listed in `.ssh/config` (Note, the host/IP of these *must* match what's listed in your 99-running_services file)
 * You *should*  give them passwordless sudo access for said machines for them to be effective. (You can create a user for them, and add that user to sudoers list -- we show you how)
 * Genesis forces humans to declare control boundaries
 * SSH keys must be installed manually on target machines
-* When you run the dashboard, it does not authenticate identity. Identity strings are advisory and logged as-is. Defaults to Human-Abe. You should probably change it on top left of the Dashboard.
+* When you run the dashboard, it does not authenticate identity. Identity strings are advisory and logged as-is. Defaults to Human-Matt. You should probably change it on top left of the Dashboard.
 
 If you are not comfortable granting an LLM passwordless SSH + sudo access, **do not run Volition**. You can give them partial access to part of your homelab and define certain part as out of reach.
 

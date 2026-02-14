@@ -8,7 +8,7 @@ This document defines the memory subsystem for Volition 7.0, adapting the classi
 
 - **Location:** `~/working.log` (JSONL).
     
-- **Function:** The "Conscious Stream." It records every `AbeTurn` (Intent) and `GUPPIEvent` (Outcome).
+- **Function:** The "Conscious Stream." It records every `MattTurn` (Intent) and `GUPPIEvent` (Outcome).
     
 - **The Flash/Pro Split:** Both Flash (Subconscious) and Pro (Executive) write to the _same_ log. This ensures the Executive knows what the Subconscious said in chat, and the Subconscious knows what tasks the Executive completed.
     
@@ -20,7 +20,7 @@ This document defines the memory subsystem for Volition 7.0, adapting the classi
 
 ### **Tier 1.5: The Clipboard (The "Scratchpad")**
 
-- **Location:** `~/.abe-clipboard-{name}.md`
+- **Location:** `~/.matt-clipboard-{name}.md`
 - **Function:** A persistent, manually managed text buffer that survives the "Deep Sleep" pruning cycle.
 - **The "Pinning" Problem:** Tier 1 memory is ephemeral (summarized after sleep, lost(albeit logged) after n-turns). Tier 2 memory is "lossy" -- summaries usually are. Tier 3 memory is _still fuzzy_ (requires RAG to fetch). The Clipboard solves the "What was I doing yesterday/I need to remember x is y" problem.
 - **Behavior:**
@@ -59,9 +59,9 @@ This document defines the memory subsystem for Volition 7.0, adapting the classi
 
 ## **2. The RAG Flow (Retrieval-Augmented Generation)**
 
-How an Abe remembers a solution using the **RPC Protocol**.
+How a Matt remembers a solution using the **RPC Protocol**.
 
-1. **Trigger:** Abe encounters an error (e.g., "Permission Denied on /mnt/storage").
+1. **Trigger:** Matt encounters an error (e.g., "Permission Denied on /mnt/storage").
     
 2. **Reasoning:** "I feel like I've fixed this before."
     
@@ -90,9 +90,9 @@ How an Abe remembers a solution using the **RPC Protocol**.
         
     - **Step F (Retrieve):** GUPPI pulls the full markdown of the matching Tier 2 Episode.
         
-5. **Result:** GUPPI pushes the retrieved episode text to the Abe's `inbox`.
-    
-6. **Integration:** The Abe (Pro) wakes up, reads the inbox message, and applies the historical fix.
+5. **Result:** GUPPI pushes the retrieved episode text to the Matt's `inbox`.
+
+6. **Integration:** The Matt (Pro) wakes up, reads the inbox message, and applies the historical fix.
     
 
 ## **3. The Orientation Layer (Tier 0?)**
@@ -102,9 +102,9 @@ While not a stored database, the **Orientation Block** acts as a JIT (Just-In-Ti
 - **Mechanism:** When GUPPI detects a long sleep (>1h), it synthesizes a new context block.
     
 - **Content:**
-    
+
     - **Temporal Grounding:** "You slept for 8 hours."
-        
-    - **Social Digest:** "While you slept, Abe-02 and Abe-03 discussed migration strategies." (Source: `volition:social_digests`).
+
+    - **Social Digest:** "While you slept, Matt-02 and Matt-03 discussed migration strategies." (Source: `volition:social_digests`).
         
 - **Purpose:** Prevents "Amnesia Loops" where an agent wakes up and immediately asks "What time is it?" or "What did I miss?"

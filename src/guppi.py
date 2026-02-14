@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """GUPPI daemon - Volition 7.8 (The Safety Update)
-The "Body" of the Abe Agent.
+The "Body" of the Matt Agent.
 
 Status: STABLE RELEASE 7.8
 - Architecture: Refractory Scheduler (Hot Senses / Paced Workload)
@@ -63,7 +63,7 @@ EPISODES_DIR = MEMORY_DIR / "episodes"
 ARCHIVE_DIR = MEMORY_DIR / "tier_1_archive"
 VECTOR_DB_PATH = MEMORY_DIR / "vector.db"
 COMM_LOG = ABE_ROOT / "communications.log" # The "Mbox" archive
-GENESIS_PROMPT_FILE = DOCS_DIR / os.environ.get("GENESIS_PROMPT_FILE", "0.0-Abe-Genesis_Prompt.md")
+GENESIS_PROMPT_FILE = DOCS_DIR / os.environ.get("GENESIS_PROMPT_FILE", "0.0-Matt-Genesis_Prompt.md")
 PROTOCOLS_FILE = DOCS_DIR / "Fleet_Protocols.md"
 DOWNLOADS_DIR = MEMORY_DIR / "downloads"
 # v7.2.1: Flight Recorder Log
@@ -297,7 +297,7 @@ class GuppiDaemon:
         if not text or len(text) <= limit:
             return text
         cut_size = len(text) - limit
-        return text[:limit] + f"\n... [Hey this is an automated thing set up by THE Abe -- Whatever you're trying, it was flagged because you're trying to spend more than 20k chars this turn. This is unadvised. Try to reduce the intake. Original Err Message: TRUNCATED BY GUPPI SAFETY {cut_size} chars removed, if you need to override this, Ping me on ntfy, set a todo in future + a clipboard entry to see if I responded, and hibernate] ..."
+        return text[:limit] + f"\n... [Hey this is an automated thing set up by THE Matt -- Whatever you're trying, it was flagged because you're trying to spend more than 20k chars this turn. This is unadvised. Try to reduce the intake. Original Err Message: TRUNCATED BY GUPPI SAFETY {cut_size} chars removed, if you need to override this, Ping me on ntfy, set a todo in future + a clipboard entry to see if I responded, and hibernate] ..."
 
     async def _monitor_subprocess(self, turn_id, proc):
         """Dedicated task to wait for a process and release semaphore."""
@@ -375,7 +375,7 @@ class GuppiDaemon:
         """v5.9: Detects pending turns from a previous run and closes them."""
         recovered = False
         for entry in self.log_buffer:
-            if entry.get("type") == "AbeTurn" and entry.get("status") == "pending":
+            if entry.get("type") == "MattTurn" and entry.get("status") == "pending":
                 logger.warning(f"Crash Recovery: Found pending turn {entry.get('id')}. Marking interrupted.")
                 entry["status"] = "interrupted"
                 entry["results"] = {"error": "GUPPI Crash/Restart Detected"}
@@ -450,7 +450,7 @@ class GuppiDaemon:
         if not overflow_dir.exists(): return
 
         # Retention Policy: 3 Days. 
-        # If Abe hasn't looked at a log in 3 days, he's not going to.
+        # If Matt hasn't looked at a log in 3 days, he's not going to.
         retention_seconds = 3 * 86400
         now = time.time()
 
@@ -473,7 +473,7 @@ class GuppiDaemon:
         overflow_dir.mkdir(parents=True, exist_ok=True)
 
         for i, entry in enumerate(buffer_copy):
-            # The "Recency Rule": If it's the last item, Abe is looking at it RIGHT NOW.
+            # The "Recency Rule": If it's the last item, Matt is looking at it RIGHT NOW.
 
             is_most_recent = (i == len(buffer_copy) - 1)
             char_limit = 50000 if is_most_recent else 1000
@@ -761,7 +761,7 @@ class GuppiDaemon:
 
     async def log_abe_intent(self, turn_id, parent_evt_id, reasoning, action, thought_signature=None):
         entry = {
-            "id": turn_id, "type": "AbeTurn", "agent": self.abe_name,
+            "id": turn_id, "type": "MattTurn", "agent": self.abe_name,
             "parent_event_id": parent_evt_id, 
             "timestamp_intent": datetime.utcnow().isoformat(),
             "status": "pending", "reasoning": reasoning, "action": action, "results": None
@@ -1881,7 +1881,7 @@ You were asleep for: {time_str}
     # --- ACTION IMPLEMENTATIONS ---
 
     def _tool_help(self, tool_name=None):
-        # RC1: Self-Documenting Protocol for Abes
+        # RC1: Self-Documenting Protocol for Matts
         tools = {
             "shell": "Execute local shell command. Args: command",
             "remote_exec": "Execute remote SSH command. Args: host, command",
@@ -1966,7 +1966,7 @@ You were asleep for: {time_str}
             
             raw_results = data.get("results", [])
             if not raw_results:
-                # [FIX] Explicit failure so Abe knows to try again
+                # [FIX] Explicit failure so Matt knows to try again
                 return {
                     "status": "failed", 
                     "message": "Zero results found. Your query might be too specific, or the search engine is blocking requests. Try simplifying keywords."
@@ -2064,7 +2064,7 @@ You were asleep for: {time_str}
     
     async def _handle_spawn_abe(self, turn_id, action):
         host = action.get("host")
-        script = action.get("spawn_script", "spawn_abe_lxc.sh")
+        script = action.get("spawn_script", "spawn_matt_lxc.sh")
         # Simplified for brevity, assumes script exists on host
         asyncio.create_task(self._run_remote_ssh(turn_id, host, f"bash {script}"))
 

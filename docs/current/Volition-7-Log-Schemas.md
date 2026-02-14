@@ -6,7 +6,7 @@ This file defines the strict JSON structures permitted in `working.log` and key 
 
 These schemas apply to the persistent `working.log` and the inter-process streams defining the v7.0 architecture.
 
-## **1. AbeTurn (The "Think" Cycle)**
+## **1. MattTurn (The "Think" Cycle)**
 
 This is the **Two-Phase Commit** log representing an agent's agency.
 
@@ -18,8 +18,8 @@ This is the **Two-Phase Commit** log representing an agent's agency.
 ```
 {
   "id": "turn-uuid-1234",
-  "type": "AbeTurn",
-  "agent": "abe-03",
+  "type": "MattTurn",
+  "agent": "matt-03",
   "parent_event_id": "evt-001",
   "timestamp_intent": "2026-01-02T10:00:00Z",
   "status": "pending",
@@ -38,8 +38,8 @@ This is the **Two-Phase Commit** log representing an agent's agency.
 ```
 {
   "id": "turn-uuid-1234",
-  "type": "AbeTurn",
-  "agent": "abe-03",
+  "type": "MattTurn",
+  "agent": "matt-03",
   "parent_event_id": "evt-001",
   "timestamp_intent": "2026-01-02T10:00:00Z",
   "timestamp_outcome": "2026-01-02T10:00:02Z",
@@ -91,12 +91,12 @@ Logged by GUPPI when an external signal wakes the agent.
 {
   "id": "evt-001",
   "type": "GUPPIEvent",
-  "agent": "abe-03",
+  "agent": "matt-03",
   "timestamp_event": "2026-01-02T09:59:59Z",
   "event_type": "NewInboxMessage",
-  "source": "inbox:abe-03",
+  "source": "inbox:matt-03",
   "content": "Alert: Nginx is down on Nicaea.",
-  "from": "abe-01"
+  "from": "matt-01"
 }
 ```
 
@@ -106,7 +106,7 @@ Logged by GUPPI when an external signal wakes the agent.
 {
   "id": "evt-002",
   "type": "GUPPIEvent",
-  "agent": "abe-03",
+  "agent": "matt-03",
   "timestamp_event": "2026-01-02T10:05:00Z",
   "event_type": "SocialDigest",
   "source": "volition:social_digests",
@@ -114,8 +114,8 @@ Logged by GUPPI when an external signal wakes the agent.
     "start_ts": 1735810000.0,
     "end_ts": 1735813600.0,
     "msg_count": 15,
-    "participants": ["abe-01", "abe-02"],
-    "summary": "Abe-01 and Abe-02 discussed the Nicaea migration."
+    "participants": ["matt-01", "matt-02"],
+    "summary": "Matt-01 and Matt-02 discussed the Nicaea migration."
   }
 }
 ```
@@ -126,7 +126,7 @@ Logged by GUPPI when an external signal wakes the agent.
 {
   "id": "evt-003",
   "type": "GUPPIEvent",
-  "agent": "abe-03",
+  "agent": "matt-03",
   "timestamp_event": "2026-01-02T10:00:02Z",
   "event_type": "TaskCompleted",
   "source": "GUPPI",

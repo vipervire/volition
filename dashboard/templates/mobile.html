@@ -126,8 +126,8 @@
                 {messages.map((m, i) => {
                     const data = m?.data || {};
                     const from = data.from || "Unknown";
-                    const isMe = from === identity || from === "Human-Abe" || from === "Human";
-                    
+                    const isMe = from === identity || from === "Human-Matt" || from === "Human";
+
                     return (
                         <div key={i} className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
                            <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
@@ -253,7 +253,7 @@
                                <h3 className="font-bold text-gray-400 uppercase tracking-widest text-xs">Secure Uplink</h3>
                                <div>
                                    <label className="block text-xs text-gray-500 mb-1">To (comma separated)</label>
-                                   <input value={to} onChange={e=>setTo(e.target.value)} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white" placeholder="abe-01, abe-02" />
+                                   <input value={to} onChange={e=>setTo(e.target.value)} className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white" placeholder="matt-01, matt-02" />
                                </div>
                                <div>
                                    <label className="block text-xs text-gray-500 mb-1">Message</label>
@@ -330,7 +330,7 @@
 
       const App = () => {
         const [activeTab, setActiveTab] = useState("chat");
-        const [identity, setIdentity] = useState("Human-Abe");
+        const [identity, setIdentity] = useState("Human-Matt");
         const [socket, setSocket] = useState(null);
         
         const [chats, setChats] = useState({});

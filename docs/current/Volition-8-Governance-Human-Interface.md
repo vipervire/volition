@@ -27,9 +27,9 @@ The **Volition Dashboard** (`volition_dashboard.py`) is the primary visual comma
 
 A simple wrapper around `redis-cli` for interacting with the collective.
 
-- **`volition email <abe_name> "<message>"`**
-    
-    - **Action:** `LPUSH inbox:<abe_name> ...`
+- **`volition email <matt_name> "<message>"`**
+
+    - **Action:** `LPUSH inbox:<matt_name> ...`
         
     - **Purpose:** Direct, private command. Wakes the **Pro** executive.
         
@@ -56,19 +56,19 @@ A simple wrapper around `redis-cli` for interacting with the collective.
 
 ## **2. Immutable Audit Log ("The Black Box")**
 
-A security measure that Abes cannot disable.
+A security measure that Matts cannot disable.
 
 - **Component:** A dedicated, minimal LXC (`volition-logger`).
-    
+
 - **Mechanism:**
-    
+
     - Subscribes to `volition:action_log` (Stream).
-        
-    - GUPPI is hardcoded to push _every_ `AbeTurn` (Intent and Outcome) to this stream.
+
+    - GUPPI is hardcoded to push _every_ `MattTurn` (Intent and Outcome) to this stream.
         
 - **Storage:** Appends all events to a write-only file.
     
-- **Security:** Abes have no write access to this LXC or the storage path.
+- **Security:** Matts have no write access to this LXC or the storage path.
     
 
 ## **3. Stewardship Strategy**
@@ -77,8 +77,8 @@ Backups are an autonomous responsibility.
 
 - **LXC Backups:** Proxmox host runs `vzdump` daily.
     
-- **Verification:** A recurring task is injected into `Abe-01`'s `todo.db`:
-    
+- **Verification:** A recurring task is injected into `Matt-01`'s `todo.db`:
+
     - `{"tool": "todo_add", "task": "Verify integrity of daily LXC backups", "priority": 9, "due": "24h"}`
-        
-- **Recovery:** If a child Abe dies (container corruption), the Parent is responsible for spawning a replacement using the last known identity file.
+
+- **Recovery:** If a child Matt dies (container corruption), the Parent is responsible for spawning a replacement using the last known identity file.

@@ -6,15 +6,15 @@ This directory contains the specifications for the Volition Agent System.
 
 The active system specification. Reflects the codebase in /src. Note: Almost all of these files are mandatory for the system to function correctly. You should take some time to map out your homelab in at least `99-current_services.md` before deploying agents.
 
-- 0.0-Abe-Genesis_Prompt.md: The complete system prompt injected by GUPPI on every Think cycle. Defines agent identity, split-brain modes, memory architecture, tool catalog, social protocols, and output contracts.
+- 0.0-Matt-Genesis_Prompt.md: The complete system prompt injected by GUPPI on every Think cycle. Defines agent identity, split-brain modes, memory architecture, tool catalog, social protocols, and output contracts.
 
-- 98-source_profile.md: The human user's identity document. Template covering personal background, professional context, technical environment, personality traits, communication style, goals, and preferences that agents read to understand their Source. This will be 'interpreted' by agents into their `.abe-priors.md` file on their first boot.
+- 98-source_profile.md: The human user's identity document. Template covering personal background, professional context, technical environment, personality traits, communication style, goals, and preferences that agents read to understand their Source. This will be 'interpreted' by agents into their `.matt-priors.md` file on their first boot.
 
-- 99-current_services.md: Complete infrastructure inventory. Hardware specs, network topology, VMs, containers, and services across all hosts. Single source of truth for the homelab's physical and logical architecture. This file is **mandatory**. Without this, the Abes will be lobotomized.
+- 99-current_services.md: Complete infrastructure inventory. Hardware specs, network topology, VMs, containers, and services across all hosts. Single source of truth for the homelab's physical and logical architecture. This file is **mandatory**. Without this, the Matts will be lobotomized.
 
 - Volition-1-Philosophy.md: The "Why". Split-brain theory and agent rights.
 
-- Volition-2-Core-Architecture.md: The "What". Component definitions (Abe, GUPPI, Scribe).
+- Volition-2-Core-Architecture.md: The "What". Component definitions (Matt, GUPPI, Scribe).
 
 - Volition-3-GUPPI-Loop.md: The "How". The async event loop and lifecycle.
 
