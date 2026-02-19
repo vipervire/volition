@@ -1705,7 +1705,7 @@ You were asleep for: {time_str}
                 # v6.5: Intercept Vectorize requests
                 if mode == "vectorize":
                     # Validate prompt_file_path is provided for vectorize mode
-                    if not prompt_file_path:
+                    if prompt_file_path is None:
                         result = {"status": "error", "message": "prompt_file is required for mode='vectorize'"}
                     else:
                         try:
