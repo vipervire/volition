@@ -1704,27 +1704,31 @@ You were asleep for: {time_str}
 
                 # v6.5: Intercept Vectorize requests
                 if mode == "vectorize":
-                    try:
-                        p_path = Path(prompt_file_path)
-                        if p_path.exists():
-                            content = p_path.read_text(encoding="utf-8")
-                            
-                            # [FIX] Enforce 'vec-' prefix so _handle_vector_result accepts it
-                            # If turn_id is "turn-123", this becomes "vec-turn-123"
-                            vec_task_id = f"vec-{turn_id}" 
-                            
-                            task_payload = {
-                                "task_id": vec_task_id, # <--- Use the prefixed ID
-                                "type": "embed",
-                                "content": content, 
-                                "reply_to": f"inbox:{self.abe_name}"
-                            }
-                            await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
-                            result = {"status": "offloaded_to_gpu", "note": "Content sent to GPU for embedding. You will be notified."}
-                        else:
-                            result = {"status": "error", "message": f"Prompt File not found for Vectorization: {prompt_file_path}"}
-                    except Exception as e:
-                        result = {"status": "error", "message": f"Read error during offload: {e}"}
+                    # Validate prompt_file_path is provided for vectorize mode
+                    if not prompt_file_path:
+                        result = {"status": "error", "message": "prompt_file is required for mode='vectorize'"}
+                    else:
+                        try:
+                            p_path = Path(prompt_file_path)
+                            if p_path.exists():
+                                content = p_path.read_text(encoding="utf-8")
+                                
+                                # [FIX] Enforce 'vec-' prefix so _handle_vector_result accepts it
+                                # If turn_id is "turn-123", this becomes "vec-turn-123"
+                                vec_task_id = f"vec-{turn_id}" 
+                                
+                                task_payload = {
+                                    "task_id": vec_task_id, # <--- Use the prefixed ID
+                                    "type": "embed",
+                                    "content": content, 
+                                    "reply_to": f"inbox:{self.abe_name}"
+                                }
+                                await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
+                                result = {"status": "offloaded_to_gpu", "note": "Content sent to GPU for embedding. You will be notified."}
+                            else:
+                                result = {"status": "error", "message": f"Prompt File not found for Vectorization: {prompt_file_path}"}
+                        except Exception as e:
+                            result = {"status": "error", "message": f"Read error during offload: {e}"}
                 # BRANCH 2: SUMMARIZATION (Local Scribe)
                 # the Fix for the "Prompt vs File" injection bug
                 else:
