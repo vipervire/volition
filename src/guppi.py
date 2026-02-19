@@ -1070,6 +1070,53 @@ class GuppiDaemon:
         
         await self.run_think_cycle(trigger_data, parent_evt_id, orientation_data=orientation_data)
 
+    def _sanitize_log_content(self, content: Any, limit: int = 20000) -> Any:
+        """
+        Targeted, schema-aware truncation. 
+        Only truncates known bloat keys to protect structural data integrity.
+        """
+        if isinstance(content, str):
+            return self._truncate_output(content, limit)
+
+        if not isinstance(content, dict):
+            return content
+
+        # The keys we know can hold massive, untruncated text blobs
+        bloat_keys = {"raw", "content", "results", "stdout", "stderr", "message", "summary"}
+
+        def _clean(data):
+            if isinstance(data, dict):
+                new_dict = {}
+                for k, v in data.items():
+                    if k in bloat_keys and isinstance(v, str):
+                        new_dict[k] = self._truncate_output(v, limit)
+                    else:
+                        new_dict[k] = _clean(v)
+                return new_dict
+            elif isinstance(data, list):
+                return [_clean(item) for item in data]
+            else:
+                return data
+
+        return _clean(content)
+
+    async def log_guppi_event(self, event_type, content, source="GUPPI") -> str:
+        # [FIX] Schema-aware truncation to prevent echo bloat without breaking ABI
+        truncated_content = self._sanitize_log_content(content)
+
+        evt_id = f"evt-{uuid.uuid4().hex[:8]}"
+        entry = {
+            "id": evt_id, "type": "GUPPIEvent", "agent": self.abe_name,
+            "timestamp_event": datetime.utcnow().isoformat(),
+            "event_type": event_type, "source": source, "content": truncated_content
+        }
+
+        async with self.log_lock:
+            self.log_buffer.append(entry)
+            try: await self._rewrite_log_file()
+            except: logger.exception("Failed local event log")
+        return evt_id
+
     async def _handle_alarm(self, orientation_data=None):
         """Checks todo.db for due tasks and wakes the agent if needed."""
         now_ts = datetime.utcnow().isoformat()
