@@ -489,7 +489,7 @@ class GuppiDaemon:
 
             # [FIX] Recursively sanitize content field (e.g., massive inbox messages)
             if entry.get("type") == "GUPPIEvent" and "content" in entry:
-                 if isinstance(entry["content"], str):
+                if isinstance(entry["content"], str):
                     new_entry["content"] = self._truncate_output(entry["content"], limit=char_limit)
 
 
