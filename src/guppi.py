@@ -85,16 +85,11 @@ if not NTFY_URL or not NTFY_TOKEN:
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "https://civitat.es/search") 
 
 # API Config
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "google")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "https://volition.indoria.org")
-OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
+CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
 
 # v6.5: Split-Brain Config
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro") 
-MODEL_PRO = os.environ.get("OPENROUTER_MODEL_PRO") or os.environ.get("GEMINI_MODEL_PRO") or GEMINI_MODEL
-MODEL_FLASH = os.environ.get("OPENROUTER_MODEL_FLASH") or os.environ.get("GEMINI_MODEL_FLASH", "gemini-2.5-flash")
+MODEL_PRO = os.environ.get("MODEL_PRO", "claude-opus-4-6")
+MODEL_FLASH = os.environ.get("MODEL_FLASH", "claude-sonnet-4-6")
 
 # v7.0: Social Stream Config
 SOCIAL_DIGEST_STREAM = "volition:social_digests"
@@ -1506,77 +1501,65 @@ class GuppiDaemon:
                 try: await self.r.lpush(f"inbox:{self.abe_name}", json.dumps(alert))
                 except: pass
 
-    async def call_abe_api(self, prompt_text: str, model_id: str = GEMINI_MODEL) -> Dict:
-        if LLM_PROVIDER == "openrouter":
-            return await self._call_openrouter(model_id, prompt_text)
-        else:
-            return await self._call_google(model_id, prompt_text)
+    async def call_abe_api(self, prompt_text: str, model_id: str = MODEL_PRO) -> Dict:
+        return await self._call_claude_cli(model_id, prompt_text)
 
-    async def _call_google(self, model_id, prompt):
-        if not GEMINI_API_KEY:
-             logger.error("GEMINI_API_KEY missing. Returning hibernate.")
-             return {"reasoning": "Missing Gemini API Key", "action": {"tool": "hibernate"}}
-        
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={GEMINI_API_KEY}"
-        headers = {'Content-Type': 'application/json'}
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"}
-        }
+    async def _call_claude_cli(self, model_id: str, prompt: str) -> Dict:
+        try:
+            cmd = [CLAUDE_CLI, "--print", "--model", model_id]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode('utf-8')),
+                    timeout=300
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                logger.error(f"Claude CLI timed out after 300s on {model_id}")
+                return {"reasoning": "Claude CLI Timeout", "action": {"tool": "hibernate"}}
 
-        async with aiohttp.ClientSession() as session:
-            # [NEW] 7.8: INCREASED TIMEOUT to 180s
-            async with session.post(url, headers=headers, json=payload, timeout=300) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    logger.error(f"API Error {resp.status} on {model_id}: {err}")
-                    return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
-                
-                data = await resp.json()
-                candidate = data.get("candidates", [])[0]
-                content_parts = candidate.get("content", {}).get("parts", [])
-                
-                text_response = ""
-                thought_sig = None
-                for part in content_parts:
-                    if "text" in part: text_response += part["text"]
-                    if "thoughtSignature" in part: thought_sig = part["thoughtSignature"]
-                        
-                return self._clean_json(text_response, thought_sig)
+            if proc.returncode != 0:
+                err = stderr.decode('utf-8', errors='replace')
+                logger.error(f"Claude CLI error (code {proc.returncode}) on {model_id}: {err}")
+                await self._notify_claude_auth_if_needed(err)
+                return {"reasoning": f"Claude CLI Error: {proc.returncode}", "action": {"tool": "hibernate"}}
 
-    async def _call_openrouter(self, model_alias, prompt):
-        model_id = model_alias
-        use_thinking = ":thinking" in model_id
-        if use_thinking: model_id = model_id.split(":")[0]
-            
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "HTTP-Referer": OPENROUTER_SITE_URL,
-            "X-Title": OPENROUTER_APP_NAME,
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": model_id,
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"}
-        }
-        
-        if use_thinking:
-            payload["reasoning"] = {"effort": "high"}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=300) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    logger.error(f"OpenRouter Error {resp.status}: {err}")
-                    return {"reasoning": f"OR Error: {resp.status}", "action": {"tool": "hibernate"}}
-                data = await resp.json()
-                choice = data["choices"][0]
-                text = choice["message"]["content"]
-                
-                return self._clean_json(text, thought_sig=None)
+            text_response = stdout.decode('utf-8', errors='replace')
+            return self._clean_json(text_response)
+        except Exception as e:
+            logger.error(f"Claude CLI subprocess error: {e}")
+            return {"reasoning": f"Claude CLI Error: {e}", "action": {"tool": "hibernate"}}
+
+    async def _notify_claude_auth_if_needed(self, err_text: str):
+        """Fires a Ntfy alert if the Claude CLI error looks like an auth failure."""
+        auth_signals = ("auth", "login", "unauthorized", "not logged in", "token", "credential", "sign in")
+        if not any(sig in err_text.lower() for sig in auth_signals):
+            return
+        if not NTFY_URL or not NTFY_TOKEN:
+            logger.warning("Claude CLI auth failure detected but Ntfy not configured.")
+            return
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                await session.post(
+                    NTFY_URL,
+                    data=f"[{self.abe_name}] Claude CLI needs authentication. Run 'claude' on the host to log in.",
+                    headers={
+                        "Title": "Claude CLI: Authentication Required",
+                        "Priority": "urgent",
+                        "Tags": "key,rotating_light",
+                        "Authorization": f"Bearer {NTFY_TOKEN}"
+                    }
+                )
+            logger.warning("Auth failure Ntfy alert sent.")
+        except Exception as e:
+            logger.error(f"Failed to send auth Ntfy alert: {e}")
 
     def _clean_json(self, text_response, thought_sig=None):
         try:

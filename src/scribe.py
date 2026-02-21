@@ -24,33 +24,18 @@ import json
 import os
 import sys
 import logging
-import aiohttp
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import redis.asyncio as redis
 
-# We import google.genai conditionally or just import it (assuming env has it)
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    genai = None
-
 # --- Configuration ---
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL")
 VECTOR_DB_PATH = Path(os.environ.get("MEMORY_DIR", "./memory")) / "vector.db"
 
-# v6.4 Provider Config
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openrouter") # "google" or "openrouter"
-
-# Google
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-# OpenRouter
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "https://volition.indoria.org")
-OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
+CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [SCRIBE] - %(levelname)s - %(message)s")
@@ -81,100 +66,38 @@ async def push_result(redis_url: str, inbox: str, event_type: str, content: Any,
         sys.exit(1)
 
 async def run_llm_generation(model_name: str, prompt_text: str) -> str:
-    """Dispatches to the correct provider."""
-    if LLM_PROVIDER == "openrouter":
-        return await _run_openrouter(model_name, prompt_text)
-    else:
-        return await _run_google(model_name, prompt_text)
+    """Dispatches to Claude CLI."""
+    return await _call_claude_cli(model_name, prompt_text)
 
-async def _run_google(model_name: str, prompt_text: str) -> str:
-    """Calls the Gemini API (Native)."""
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY environment variable not set.")
-    if not genai:
-        raise ImportError("google-genai library not installed.")
-
-    # Map friendly names to actual model IDs if needed
-    # Handle explicit google/ prefix if GUPPI sends it
-    model_id = model_name.replace("google/", "")
-    # Strip thinking suffix if passed to native (not supported this way in native yet usually)
-    if ":thinking" in model_id:
-        model_id = model_id.split(":")[0]
-    
-    if "flash" in model_name and "2.5" not in model_name and "3" not in model_name:
-         model_id = "gemini-2.5-flash"
-    
-    logger.info(f"Calling Google LLM: {model_id}")
-    
-    # We wrap synchronous Google call in thread if needed
-    def _call():
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt_text,
-            config=types.GenerateContentConfig(
-                temperature=1.0, 
-            )
+async def _call_claude_cli(model_name: str, prompt_text: str) -> str:
+    """Calls the Claude CLI in non-interactive mode."""
+    cmd = [CLAUDE_CLI, "--print", "--model", model_name]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=prompt_text.encode('utf-8')),
+            timeout=300
         )
-        return response.text
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise Exception("Claude CLI timed out after 300s")
 
-    return await asyncio.to_thread(_call)
+    if proc.returncode != 0:
+        err = stderr.decode('utf-8', errors='replace')
+        # Include full stderr so parent guppi can detect auth signals in its logs
+        raise Exception(f"Claude CLI error (code {proc.returncode}): {err}")
 
-async def _run_openrouter(model_name: str, prompt_text: str) -> str:
-    """Calls OpenRouter."""
-    if not OPENROUTER_API_KEY:
-        raise ValueError("OPENROUTER_API_KEY environment variable not set.")
-    
-    # --- FIX: Generic Auto-Correction & Thinking Support ---
-    model_id = model_name
-    use_thinking = False
-    
-    # 1. Check for Thinking Suffix
-    if ":thinking" in model_id:
-        model_id = model_id.split(":")[0]
-        use_thinking = True
-    
-    # 2. If it doesn't have a provider prefix (no slash), and looks like gemini...
-    if "/" not in model_id and "gemini" in model_id.lower():
-        # Prepend google/
-        model_id = f"google/{model_id}"
-        
-    # --------------------------------------------------
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": OPENROUTER_SITE_URL,
-        "X-Title": OPENROUTER_APP_NAME,
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "model": model_id, # Use the corrected ID
-        "messages": [{"role": "user", "content": prompt_text}],
-        "response_format": {"type": "json_object"},
-        "temperature": 1.0
-    }
-    
-    # v6.5.1: Enable Thinking if requested (Unified Parameter)
-    if use_thinking:
-        payload["reasoning"] = {
-            "effort": "high"
-        }
-
-    logger.info(f"Calling OpenRouter: {model_id} (orig: {model_name}) Thinking={use_thinking}")
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload) as resp:
-            if resp.status != 200:
-                err = await resp.text()
-                raise Exception(f"OpenRouter Error {resp.status}: {err}")
-            data = await resp.json()
-            return data["choices"][0]["message"]["content"]
+    return stdout.decode('utf-8', errors='replace')
 
 async def main():
     parser = argparse.ArgumentParser(description="Volition Scribe")
-    # UPDATED DEFAULT
-    parser.add_argument("--model", default="google/gemini-3-flash-preview", help="Model to use")
+    parser.add_argument("--model", default=CLAUDE_MODEL, help="Model to use")
     parser.add_argument("--prompt-file", required=True, help="Path to file containing the prompt")
     parser.add_argument("--output-inbox", required=True, help="Redis list key to push results to")
     parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL, help="Redis connection URL")
