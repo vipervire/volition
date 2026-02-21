@@ -39,11 +39,8 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api")
 MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "mistral") 
 
 SUMMARIZE_BACKEND = os.environ.get("SUMMARIZE_BACKEND", "ollama").lower()
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL_SUMMARIZE = os.environ.get(
-    "OPENROUTER_MODEL_SUMMARIZE",
-    "google/gemini-3-flash-preview"
-)
+CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
+CLAUDE_MODEL_SUMMARIZE = os.environ.get("CLAUDE_MODEL_SUMMARIZE", "claude-sonnet-4-6")
 
 
 # Tuning
@@ -119,44 +116,35 @@ class SocialRouter:
         return None
     
 
-    async def generate_summary_openrouter(session, conversation_text):
-        if not OPENROUTER_API_KEY:
-            logger.error("OPENROUTER_API_KEY not set for OpenRouter summarize")
-            return None
-
+    async def generate_summary_claude(self, conversation_text):
+        """Uses Claude CLI to summarize the buffered conversation."""
         prompt = (
             "Summarize the following chat log briefly. "
             "Identify the participants, the main topic, and any decisions made.\n\n"
             f"{conversation_text}"
         )
-
-        payload = {
-            "model": OPENROUTER_MODEL_SUMMARIZE,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.7
-        }
-
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
         try:
-            async with session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload
-            ) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    logger.error(f"OpenRouter summary failed ({resp.status}): {err}")
-                    return None
-
-                data = await resp.json()
-                return data["choices"][0]["message"]["content"]
-
+            cmd = [CLAUDE_CLI, "--print", "--model", CLAUDE_MODEL_SUMMARIZE]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode('utf-8')),
+                timeout=120
+            )
+            if proc.returncode != 0:
+                err = stderr.decode('utf-8', errors='replace')
+                logger.error(f"Claude CLI summarize failed: {err}")
+                return None
+            return stdout.decode('utf-8', errors='replace').strip()
+        except asyncio.TimeoutError:
+            logger.error("Claude CLI summarize timed out")
+            return None
         except Exception as e:
-            logger.error(f"OpenRouter summarize exception: {e}")
+            logger.error(f"Claude CLI summarize error: {e}")
             return None
 
     # v7.0: Replaced broadcast_digest (Push) with publish_digest (Pull/Stream)
@@ -256,8 +244,8 @@ class SocialRouter:
                             if msg_count >= BURST_MIN_MESSAGES:
                                 logger.info(f"Burst concluded ({msg_count} msgs). Summarizing...")
                                 full_text = "\n".join(self.chat_buffer)
-                                if SUMMARIZE_BACKEND == "openrouter":
-                                    summary = await self.generate_summary_openrouter(session, full_text)
+                                if SUMMARIZE_BACKEND == "claude":
+                                    summary = await self.generate_summary_claude(full_text)
                                 else:
                                     summary = await self.generate_summary(session, full_text)
 

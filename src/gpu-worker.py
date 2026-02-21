@@ -42,12 +42,6 @@ MODEL_EMBED = os.environ.get("MODEL_EMBED", "nomic-embed-text")
 # 'mistral' (7B) is VRAM safe. 'mistral-small' (22B) requires ~14GB VRAM.
 MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "mistral") 
 
-EMBEDDING_BACKEND = os.environ.get("EMBEDDING_BACKEND", "ollama").lower()
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL_EMBED = os.environ.get(
-    "OPENROUTER_MODEL_EMBED",
-    "google/gemini-embedding-001"
-)
 
 
 # Logging
@@ -86,39 +80,6 @@ async def run_embedding(session: aiohttp.ClientSession, text: str) -> Optional[l
             return data.get("embedding")
     except Exception as e:
         logger.error(f"Embedding exception: {e}")
-        return None
-
-async def run_embedding_openrouter(session: aiohttp.ClientSession, text: str) -> Optional[list]:
-    if not OPENROUTER_API_KEY:
-        logger.error("OPENROUTER_API_KEY not set for openrouter embedding")
-        return None
-
-    payload = {
-        "model": OPENROUTER_MODEL_EMBED,
-        "input": text
-    }
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    try:
-        async with session.post(
-            "https://openrouter.ai/api/v1/embeddings",
-            headers=headers,
-            json=payload
-        ) as resp:
-            if resp.status != 200:
-                err = await resp.text()
-                logger.error(f"OpenRouter embedding failed ({resp.status}): {err}")
-                return None
-
-            data = await resp.json()
-            return data["data"][0]["embedding"]
-
-    except Exception as e:
-        logger.error(f"OpenRouter embedding exception: {e}")
         return None
 
 
@@ -170,12 +131,8 @@ async def process_task(r: redis.Redis, session: aiohttp.ClientSession, raw_task:
         error_msg = f"No valid content provided for {task_type}"
     else:
         if task_type == "embed":
-            if EMBEDDING_BACKEND == "openrouter":
-                vector = await run_embedding_openrouter(session, content)
-                backend_name = OPENROUTER_MODEL_EMBED
-            else:
-                vector = await run_embedding(session, content)
-                backend_name = MODEL_EMBED
+            vector = await run_embedding(session, content)
+            backend_name = MODEL_EMBED
 
             if vector:
                 result_data = {"vector": vector}
