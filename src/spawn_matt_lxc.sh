@@ -92,6 +92,23 @@ sudo truncate -s 0 "$MOUNT_POINT/root/working.log"
 sudo rm -f "$MOUNT_POINT/root/.tmp_*" 2>/dev/null || true
 sudo rm -f "$MOUNT_POINT/root/.abe-identity.bak" 2>/dev/null || true
 
+# Read ntfy credentials and Claude CLI path from parent's .env
+ENV_FILE="$MOUNT_POINT/root/bin/.env"
+NTFY_URL=""
+NTFY_TOKEN=""
+CLAUDE_CLI="claude"
+
+if [[ -f "$ENV_FILE" ]]; then
+    NTFY_URL=$(grep -m1 '^NTFY_URL=' "$ENV_FILE" | cut -d'=' -f2-)
+    NTFY_TOKEN=$(grep -m1 '^NTFY_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
+    _CLI=$(grep -m1 '^CLAUDE_CLI=' "$ENV_FILE" | cut -d'=' -f2-)
+    CLAUDE_CLI="${_CLI:-claude}"
+fi
+
+# Hold guppi until Claude CLI is authenticated by the operator
+echo ">> Holding guppi autostart until Claude CLI is authenticated..."
+sudo rm -f "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/guppi.service" 2>/dev/null || true
+
 # 6. Start
 echo ">> Unmounting and Starting..."
 sudo pct unmount $NEXT_ID
@@ -100,4 +117,28 @@ sudo pct start $NEXT_ID
 # 7. Cleanup Host
 rm -f "$IDENTITY_FILE" "$GENESIS_FILE"
 
-echo ">> Spawn Complete. $CHILD_NAME is alive."
+# 8. Notify operator to authenticate Claude CLI before starting guppi
+AUTH_MSG="$CHILD_NAME (CT $NEXT_ID) is alive but guppi is HELD. Authenticate Claude CLI then start guppi:  1) pct enter $NEXT_ID  2) $CLAUDE_CLI  (follow login prompts)  3) exit  4) pct exec $NEXT_ID -- systemctl enable --now guppi"
+
+if [[ -n "$NTFY_URL" ]]; then
+    NTFY_ARGS=(-s \
+        -H "Title: [Volition] $CHILD_NAME needs Claude CLI auth" \
+        -H "Priority: high" \
+        -H "Tags: key,robot")
+    if [[ -n "$NTFY_TOKEN" ]]; then
+        NTFY_ARGS+=(-H "Authorization: Bearer $NTFY_TOKEN")
+    fi
+    curl "${NTFY_ARGS[@]}" -d "$AUTH_MSG" "$NTFY_URL" || true
+    echo ">> Ntfy auth alert sent."
+else
+    echo ">> [WARN] NTFY_URL not found in .env — cannot send notification."
+fi
+
+echo ""
+echo ">> ACTION REQUIRED:"
+echo ">>   1) pct enter $NEXT_ID"
+echo ">>   2) $CLAUDE_CLI        (follow login prompts)"
+echo ">>   3) exit"
+echo ">>   4) pct exec $NEXT_ID -- systemctl enable --now guppi"
+echo ""
+echo ">> Spawn Complete. $CHILD_NAME is alive (guppi held)."
