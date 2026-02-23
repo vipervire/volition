@@ -92,6 +92,16 @@ sudo truncate -s 0 "$MOUNT_POINT/root/working.log"
 sudo rm -f "$MOUNT_POINT/root/.tmp_*" 2>/dev/null || true
 sudo rm -f "$MOUNT_POINT/root/.abe-identity.bak" 2>/dev/null || true
 
+# Read ntfy credentials from parent's .env (while filesystem is still mounted)
+ENV_FILE="$MOUNT_POINT/root/bin/.env"
+NTFY_URL=""
+NTFY_TOKEN=""
+
+if [[ -f "$ENV_FILE" ]]; then
+    NTFY_URL=$(grep -m1 '^NTFY_URL=' "$ENV_FILE" | cut -d'=' -f2-)
+    NTFY_TOKEN=$(grep -m1 '^NTFY_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
+fi
+
 # 6. Start
 echo ">> Unmounting and Starting..."
 sudo pct unmount $NEXT_ID
@@ -100,4 +110,24 @@ sudo pct start $NEXT_ID
 # 7. Cleanup Host
 rm -f "$IDENTITY_FILE" "$GENESIS_FILE"
 
+# 8. Notify operator that spawn is complete
+# Note: Claude CLI credentials (~/.claude/.credentials.json) are cloned with the
+# container filesystem and are not machine-bound, so no re-auth is needed.
+SPAWN_MSG="$CHILD_NAME (CT $NEXT_ID) has been spawned from $PARENT_NAME and guppi is starting."
+
+if [[ -n "$NTFY_URL" ]]; then
+    NTFY_ARGS=(-s \
+        -H "Title: [Volition] $CHILD_NAME is alive" \
+        -H "Priority: default" \
+        -H "Tags: robot,hatching_chick")
+    if [[ -n "$NTFY_TOKEN" ]]; then
+        NTFY_ARGS+=(-H "Authorization: Bearer $NTFY_TOKEN")
+    fi
+    curl "${NTFY_ARGS[@]}" -d "$SPAWN_MSG" "$NTFY_URL" || true
+    echo ">> Ntfy spawn notification sent."
+else
+    echo ">> [WARN] NTFY_URL not found in .env — cannot send notification."
+fi
+
+echo ""
 echo ">> Spawn Complete. $CHILD_NAME is alive."

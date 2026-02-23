@@ -137,7 +137,7 @@ async def process_task(r: redis.Redis, session: aiohttp.ClientSession, raw_task:
             if vector:
                 result_data = {"vector": vector}
             else:
-                error_msg = f"Embedding generation failed ({EMBEDDING_BACKEND})"
+                error_msg = f"Embedding generation failed (ollama/{MODEL_EMBED})"
 
 
         elif task_type == "summarize":
@@ -191,11 +191,8 @@ async def main():
         sys.exit(1)
 
     # Verify Ollama
-    if EMBEDDING_BACKEND == "ollama":
-        if not await check_ollama_status():
-            logger.warning("Ollama not currently reachable. Waiting...")
-    else:
-        logger.info("Embedding backend set to OpenRouter (no Ollama required)") # Openrouter fallback
+    if not await check_ollama_status():
+        logger.warning("Ollama not currently reachable. Waiting...")
 
     
     async with aiohttp.ClientSession() as session:

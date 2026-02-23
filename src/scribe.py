@@ -5,17 +5,16 @@ scribe.py - Production Scribe Worker for Volition 6.5
 This is the ephemeral "Tasker" process spawned by GUPPI.
 It performs heavy lifting (LLM calls) and reports back via Redis.
 
-Status: RELEASE 6.5.1
+Status: RELEASE 6.5.2
 - Architecture: Split-Brain Compatible
-- Provider: Multi-Backend (Google Native or OpenRouter)
-- Feature: Thinking Model Support (Suffix Parsing)
+- Provider: Claude CLI (claude --print)
 - DEPRECATION: 'vectorize' mode is disabled. Use GUPPI GPU Offload.
 
 Usage:
-  python3 scribe.py --model google/gemini-3-flash-preview:thinking --prompt-file /tmp/p.txt --output-inbox inbox:matt-01 --meta '{"source": "log-1"}'
+  python3 scribe.py --model claude-sonnet-4-6 --prompt-file /tmp/p.txt --output-inbox inbox:matt-01 --meta '{"source": "log-1"}'
 
 Dependencies:
-  pip install redis google-genai aiohttp
+  pip install redis aiohttp
 """
 
 import argparse

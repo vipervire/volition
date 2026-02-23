@@ -12,11 +12,13 @@ WorkingDirectory=/opt/volition
 Environment=REDIS_HOST=
 Environment=REDIS_PORT=6379
 Environment=REDIS_PASSWORD=volition
+Environment=SUMMARIZE_BACKEND=claude
+Environment=CLAUDE_CLI=claude
+Environment=CLAUDE_MODEL_SUMMARIZE=claude-sonnet-4-6
+
+# Ollama fallback (local summarization if preferred, set SUMMARIZE_BACKEND=ollama)
 Environment=OLLAMA_URL=http://localhost:11434/api
 Environment=MODEL_SUMMARIZE=mistral
-Environment=SUMMARIZE_BACKEND=ollama
-Environment=OPENROUTER_API_KEY=sk-xxxxxxxx
-Environment=OPENROUTER_MODEL_SUMMARIZE=google/gemini-3-flash-preview
 
 
 # Python (same venv as gpu-worker)

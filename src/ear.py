@@ -173,7 +173,7 @@ class SocialRouter:
         if SUMMARIZE_BACKEND == "ollama":
             logger.info(f"Running Summarize backend: Ollama ({MODEL_SUMMARIZE})")
         else:
-            logger.info(f"Running Summarize backend: OpenRouter ({OPENROUTER_MODEL_SUMMARIZE})")
+            logger.info(f"Running Summarize backend: Claude CLI ({CLAUDE_MODEL_SUMMARIZE})")
 
         
         # Init: check heartbeats immediately to populate list

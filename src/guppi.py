@@ -35,10 +35,6 @@ import asyncssh
 import aiohttp 
 import chromadb
 from chromadb.config import Settings 
-try:
-    from google import genai 
-except ImportError:
-    pass 
 # v6.1: Web Reading
 try:
     import trafilatura
@@ -729,7 +725,7 @@ class GuppiDaemon:
           })
           
           # v7.1: Use Pro model (Thinking) for better synthesis quality
-          current_model = MODEL_PRO or "google/gemini-3-flash-preview:thinking"
+          current_model = MODEL_PRO or "claude-opus-4-6"
           
           cmd = [
               sys.executable, str(BIN_DIR / "scribe.py"), 
@@ -861,7 +857,7 @@ class GuppiDaemon:
                 ep_path = EPISODES_DIR / filename
 
                 if not summary_text.strip().startswith("---"):
-                    current_model = MODEL_FLASH or "gemini-3-flash-preview"
+                    current_model = MODEL_FLASH or "claude-sonnet-4-6"
                     header = f"---\ngenerated_at: {iso_ts}\ntype: tier_2_episode\nmodel: {current_model}\nsource_tier_1: {source_file}\n---\n\n"
                     summary_text = header + summary_text
 
@@ -2066,8 +2062,8 @@ You were asleep for: {time_str}
             # Use 'update_stub' mode to trigger the handler in main loop
             meta_json = json.dumps({"job_type": "update_stub", "maintenance": True})
             # Use current flash model for the compression task
-            current_model = MODEL_FLASH or "gemini-3-flash-preview"
-            
+            current_model = MODEL_FLASH or "claude-sonnet-4-6"
+
             cmd = [
                 sys.executable, str(BIN_DIR / "scribe.py"),
                 "--model", current_model,
