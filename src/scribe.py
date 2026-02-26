@@ -11,7 +11,7 @@ Status: RELEASE 6.5.2
 - DEPRECATION: 'vectorize' mode is disabled. Use GUPPI GPU Offload.
 
 Usage:
-  python3 scribe.py --model claude-sonnet-4-6 --prompt-file /tmp/p.txt --output-inbox inbox:matt-01 --meta '{"source": "log-1"}'
+  python3 scribe.py --model haiku --prompt-file /tmp/p.txt --output-inbox inbox:matt-01 --meta '{"source": "log-1"}'
 
 Dependencies:
   pip install redis aiohttp
@@ -34,7 +34,7 @@ DEFAULT_REDIS_URL = os.environ.get("REDIS_URL")
 VECTOR_DB_PATH = Path(os.environ.get("MEMORY_DIR", "./memory")) / "vector.db"
 
 CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "haiku")
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [SCRIBE] - %(levelname)s - %(message)s")
@@ -70,7 +70,12 @@ async def run_llm_generation(model_name: str, prompt_text: str) -> str:
 
 async def _call_claude_cli(model_name: str, prompt_text: str) -> str:
     """Calls the Claude CLI in non-interactive mode."""
-    cmd = [CLAUDE_CLI, "--print", "--model", model_name]
+    cmd = [
+        CLAUDE_CLI, "--print", "--model", model_name,
+        "--system-prompt", "You are a log analysis scribe. Produce clean markdown summaries. Do not use any tools.",
+        "--output-format", "json",
+        "--max-turns", "1",
+    ]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
@@ -92,7 +97,12 @@ async def _call_claude_cli(model_name: str, prompt_text: str) -> str:
         # Include full stderr so parent guppi can detect auth signals in its logs
         raise Exception(f"Claude CLI error (code {proc.returncode}): {err}")
 
-    return stdout.decode('utf-8', errors='replace')
+    raw = stdout.decode('utf-8', errors='replace')
+    try:
+        envelope = json.loads(raw)
+        return envelope.get("result", raw)
+    except Exception:
+        return raw
 
 async def main():
     parser = argparse.ArgumentParser(description="Volition Scribe")

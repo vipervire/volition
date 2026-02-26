@@ -79,10 +79,18 @@ SEARXNG_URL = os.environ.get("SEARXNG_URL", "https://civitat.es/search")
 
 # API Config
 CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
+ACTION_SCHEMA = json.dumps({
+    "type": "object",
+    "properties": {
+        "reasoning": {"type": "string"},
+        "action": {"type": "object"}
+    },
+    "required": ["reasoning", "action"]
+})
 
 # v6.5: Split-Brain Config
-MODEL_PRO = os.environ.get("MODEL_PRO", "claude-opus-4-6")
-MODEL_FLASH = os.environ.get("MODEL_FLASH", "claude-sonnet-4-6")
+MODEL_PRO = os.environ.get("MODEL_PRO", "opus")
+MODEL_FLASH = os.environ.get("MODEL_FLASH", "haiku")
 
 # v7.0: Social Stream Config
 SOCIAL_DIGEST_STREAM = "volition:social_digests"
@@ -725,7 +733,7 @@ class GuppiDaemon:
           })
           
           # v7.1: Use Pro model (Thinking) for better synthesis quality
-          current_model = MODEL_PRO or "claude-opus-4-6"
+          current_model = MODEL_PRO or "opus"
           
           cmd = [
               sys.executable, str(BIN_DIR / "scribe.py"), 
@@ -746,29 +754,6 @@ class GuppiDaemon:
 
 
     # --- EVENT & INTENT LOGGING ---
-
-    async def log_guppi_event(self, event_type, content, source="GUPPI") -> str:
-
-        # [FIX] Truncate the content immediately upon entry to prevent echo bloat.
-        if isinstance(content, str):
-            truncated_content = self._truncate_output(content)
-        elif isinstance(content, dict):
-             # Shallow copy to avoid mutating original payload if it's used elsewhere
-             truncated_content = content.copy()
-        else:
-            truncated_content = content
-        evt_id = f"evt-{uuid.uuid4().hex[:8]}"
-        entry = {
-            "id": evt_id, "type": "GUPPIEvent", "agent": self.abe_name,
-            "timestamp_event": datetime.utcnow().isoformat(),
-            "event_type": event_type, "source": source, "content": truncated_content
-        }
-
-        async with self.log_lock:
-            self.log_buffer.append(entry)
-            try: await self._rewrite_log_file()
-            except: logger.exception("Failed local event log")
-        return evt_id
 
     async def log_abe_intent(self, turn_id, parent_evt_id, reasoning, action, thought_signature=None):
         entry = {
@@ -857,7 +842,7 @@ class GuppiDaemon:
                 ep_path = EPISODES_DIR / filename
 
                 if not summary_text.strip().startswith("---"):
-                    current_model = MODEL_FLASH or "claude-sonnet-4-6"
+                    current_model = MODEL_FLASH or "haiku"
                     header = f"---\ngenerated_at: {iso_ts}\ntype: tier_2_episode\nmodel: {current_model}\nsource_tier_1: {source_file}\n---\n\n"
                     summary_text = header + summary_text
 
@@ -1346,7 +1331,7 @@ class GuppiDaemon:
 
     # --- COGNITION (Atomic + Governor) ---
 
-    async def run_think_cycle(self, event_data, parent_evt_id, force_model=None, system_notice=None, orientation_data=None, retry_count=0):
+    async def run_think_cycle(self, event_data, parent_evt_id, force_model=None, system_notice=None, orientation_data=None):
         """Atomic Think Cycle with Deadman Switch (Hybrid) + Urgency Fix."""
         cycle_id = event_data.get("id", "unknown")
         
@@ -1409,34 +1394,8 @@ class GuppiDaemon:
                   missed = await self._sync_social_history(self.last_social_sync_ts, now)
                   orientation_data = {"time_asleep": delta, "missed_digests": missed}
                   self.last_social_sync_ts = now
-            context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data)
-            
-            # [7.8.1] RETRY LOGIC WRAPPER
-            try:
-                response_payload = await self.call_abe_api(context, model_id=model)
-            except LLMOutputError as e:
-                if retry_count < 1:
-                    logger.warning(f"⚠️ Malformed JSON from {model}. Escalating to PRO for repair.")
-                    
-                    repair_notice = (
-                        f"SYSTEM ALERT: Your last response was invalid JSON. "
-                        f"The error was: {e}. "
-                        f"You must fix the JSON syntax. Check for unescaped quotes in the log data."
-                    )
-                    
-                    # RECURSIVE CALL: Force MODEL_PRO to fix the mess
-                    return await self.run_think_cycle(
-                        event_data, 
-                        parent_evt_id, 
-                        force_model=MODEL_PRO, 
-                        system_notice=repair_notice, 
-                        orientation_data=orientation_data,
-                        retry_count=retry_count + 1
-                    )
-                else:
-                    # We failed twice. Stop the bleeding.
-                    logger.error(f"❌ JSON Repair failed after retry. Giving up.")
-                    response_payload = {"reasoning": "JSON Repair Failed twice. Safety Shutdown.", "action": {"tool": "hibernate"}}
+            system_prompt, user_context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data)
+            response_payload = await self.call_abe_api(user_context, model_id=model, system_prompt=system_prompt)
             
             reasoning = response_payload.get("reasoning", "No reasoning provided.")
             action = response_payload.get("action", {"tool": "hibernate"})
@@ -1497,17 +1456,35 @@ class GuppiDaemon:
                 try: await self.r.lpush(f"inbox:{self.abe_name}", json.dumps(alert))
                 except: pass
 
-    async def call_abe_api(self, prompt_text: str, model_id: str = MODEL_PRO) -> Dict:
-        return await self._call_claude_cli(model_id, prompt_text)
+    async def call_abe_api(self, prompt_text: str, model_id: str = MODEL_PRO, system_prompt: str = "") -> Dict:
+        return await self._call_claude_cli(model_id, prompt_text, system_prompt)
 
-    async def _call_claude_cli(self, model_id: str, prompt: str) -> Dict:
+    async def _call_claude_cli(self, model_id: str, prompt: str, system_prompt: str = "") -> Dict:
+        tmp_sys = None
         try:
-            cmd = [CLAUDE_CLI, "--print", "--model", model_id]
+            env = os.environ.copy()
+            if model_id == MODEL_PRO:
+                env["CLAUDE_CODE_EFFORT_LEVEL"] = "high"
+
+            cmd = [
+                CLAUDE_CLI, "--print", "--model", model_id,
+                "--output-format", "json",
+                "--max-turns", "1",
+                "--json-schema", ACTION_SCHEMA,
+            ]
+
+            if system_prompt:
+                tmp_sys = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
+                tmp_sys.write(system_prompt)
+                tmp_sys.close()
+                cmd.extend(["--system-prompt-file", tmp_sys.name])
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=env
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -1531,6 +1508,12 @@ class GuppiDaemon:
         except Exception as e:
             logger.error(f"Claude CLI subprocess error: {e}")
             return {"reasoning": f"Claude CLI Error: {e}", "action": {"tool": "hibernate"}}
+        finally:
+            if tmp_sys:
+                try:
+                    os.unlink(tmp_sys.name)
+                except Exception:
+                    pass
 
     async def _notify_claude_auth_if_needed(self, err_text: str):
         """Fires a Ntfy alert if the Claude CLI error looks like an auth failure."""
@@ -1559,9 +1542,12 @@ class GuppiDaemon:
 
     def _clean_json(self, text_response, thought_sig=None):
         try:
-            match = re.search(r'\{.*\}', text_response, re.DOTALL)
-            clean_json = match.group(0) if match else text_response
-            parsed = json.loads(clean_json)
+            envelope = json.loads(text_response)
+            inner = envelope.get("result") or envelope.get("structured_output", "")
+            if isinstance(inner, dict):
+                parsed = inner
+            else:
+                parsed = json.loads(inner)
 
             # Active Decontamination
             keys_to_scrub = ["thought_signature", "thoughtSignature"]
@@ -1571,7 +1557,6 @@ class GuppiDaemon:
             if thought_sig: parsed["thoughtSignature"] = thought_sig
             return parsed
         except Exception as e:
-            # Strip massive log dumps from the error message to keep logs clean
             logger.error(f"JSON Parse Failed. Raising LLMOutputError.")
             raise LLMOutputError(f"JSON Syntax Error: {str(e)}")
         
@@ -1646,14 +1631,14 @@ You were asleep for: {time_str}
         clipboard_content = self.clipboard.read()
         clipboard_block = f"\n[ACTIVE_CLIPBOARD]\n(Persistent scratchpad. Use GUPPI tool 'manage_clipboard' to edit)\n{clipboard_content}\n"
 
-        # Assemble Prompt
-        return f"""
-{genesis}
+        # Split into static system prompt and dynamic user context
+        system_prompt = f"""{genesis}
 {priors}
-{protocol_block}
-[IDENTITY_PASSPORT]
+{protocol_block}"""
+
+        user_context = f"""[IDENTITY_PASSPORT]
 {json.dumps(self.identity, indent=2)}
-[TODAY'S CHANGELOG (Latest Entries)] 
+[TODAY'S CHANGELOG (Latest Entries)]
 {daily_log}
 [TIER_2_MEMORY_EPISODES]
 {summaries}
@@ -1666,6 +1651,7 @@ You were asleep for: {time_str}
 [CURRENT_EVENT]
 {json.dumps(current_event_data, indent=2)}
 """
+        return system_prompt, user_context
 
     # --- ACTIONS (Standard v7.2.3 Toolset) ---
 
@@ -2062,7 +2048,7 @@ You were asleep for: {time_str}
             # Use 'update_stub' mode to trigger the handler in main loop
             meta_json = json.dumps({"job_type": "update_stub", "maintenance": True})
             # Use current flash model for the compression task
-            current_model = MODEL_FLASH or "claude-sonnet-4-6"
+            current_model = MODEL_FLASH or "haiku"
 
             cmd = [
                 sys.executable, str(BIN_DIR / "scribe.py"),

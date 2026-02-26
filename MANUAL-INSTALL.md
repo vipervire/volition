@@ -131,7 +131,7 @@ Run on **any Linux machine** that:
 
 * Can reach Redis
 * Has Python 3.10+
-* Has either Ollama or OpenRouter access
+* Has either Ollama or Claude CLI access
 
 ### Ollama (recommended)
 

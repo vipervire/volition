@@ -40,7 +40,7 @@ MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "mistral")
 
 SUMMARIZE_BACKEND = os.environ.get("SUMMARIZE_BACKEND", "ollama").lower()
 CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
-CLAUDE_MODEL_SUMMARIZE = os.environ.get("CLAUDE_MODEL_SUMMARIZE", "claude-sonnet-4-6")
+CLAUDE_MODEL_SUMMARIZE = os.environ.get("CLAUDE_MODEL_SUMMARIZE", "haiku")
 
 
 # Tuning
@@ -124,7 +124,12 @@ class SocialRouter:
             f"{conversation_text}"
         )
         try:
-            cmd = [CLAUDE_CLI, "--print", "--model", CLAUDE_MODEL_SUMMARIZE]
+            cmd = [
+                CLAUDE_CLI, "--print", "--model", CLAUDE_MODEL_SUMMARIZE,
+                "--system-prompt", "You are a conversation summarizer. Identify participants, topics, and decisions. Do not use any tools.",
+                "--output-format", "json",
+                "--max-turns", "1",
+            ]
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
@@ -139,7 +144,12 @@ class SocialRouter:
                 err = stderr.decode('utf-8', errors='replace')
                 logger.error(f"Claude CLI summarize failed: {err}")
                 return None
-            return stdout.decode('utf-8', errors='replace').strip()
+            raw = stdout.decode('utf-8', errors='replace').strip()
+            try:
+                envelope = json.loads(raw)
+                return envelope.get("result", raw)
+            except Exception:
+                return raw
         except asyncio.TimeoutError:
             logger.error("Claude CLI summarize timed out")
             return None

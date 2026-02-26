@@ -124,6 +124,7 @@ async def process_task(r: redis.Redis, session: aiohttp.ClientSession, raw_task:
 
     result_data = None
     error_msg = None
+    backend_name = MODEL_EMBED
 
     # --- Router ---
     # v6.4 FIX: Check for empty/whitespace content to prevent 400 errors

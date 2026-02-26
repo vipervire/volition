@@ -74,10 +74,8 @@ Genesis creates exactly one Matt (matt-01). All other services are infrastructur
 * Proxmox VE host (for LXC)
 * Redis (reachable over LAN)
 * Python 3.10+
-* OpenRouter API key (required for core reasoning) and/or Ollama (used by GPU Worker and Ear)
-
-  * For now guppi.py explicitly only uses Openrouter. My personal repo has some haphazarded llama.cpp/ollama vars, and I'd like to clear it out before I make it available.
-  * Ollama is available for social digest(ear), and summarization/embeddings(gpu-worker). However, openrouter can be used here too.
+* Claude CLI (`claude`) installed and authenticated (required for core reasoning). Install: `npm install -g @anthropic-ai/claude-code`, then run `claude` to authenticate.
+* Ollama (used by GPU Worker and Ear for embeddings/summarization; optional if you configure a different backend)
 
 ### Strongly Recommended
 
@@ -124,7 +122,7 @@ python3 genesis.py
 
 Genesis will:
 
-* Prompt you for Redis, OpenRouter, and network configuration
+* Prompt you for Redis, Claude CLI, and network configuration
 * Generate service files for infrastructure components
 * Pause and require you to explicitly deploy those services
 * Create `matt-01` as an LXC container

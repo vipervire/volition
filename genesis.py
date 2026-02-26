@@ -231,8 +231,8 @@ def main():
     print("Install: npm install -g @anthropic-ai/claude-code")
     print("Authenticate: claude (follow login prompts)")
     claude_cli = prompt("Path to Claude CLI binary", "claude")
-    model_pro = prompt("Model for high-agency tasks (Pro)", "claude-opus-4-6")
-    model_flash = prompt("Model for low-risk/chat tasks (Flash)", "claude-sonnet-4-6")
+    model_pro = prompt("Model for high-agency tasks (Pro)", "opus")
+    model_flash = prompt("Model for low-risk/chat tasks (Flash)", "haiku")
 
     # Generate .env content
     env_content = f"""# Volition Environment Config
