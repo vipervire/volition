@@ -1470,6 +1470,9 @@ class GuppiDaemon:
                 CLAUDE_CLI, "--print", "--model", model_id,
                 "--output-format", "json",
                 "--max-turns", "1",
+                "--tools", "",
+                "--no-session-persistence",
+                "--disable-slash-commands",
                 "--json-schema", ACTION_SCHEMA,
             ]
 
@@ -1543,7 +1546,7 @@ class GuppiDaemon:
     def _clean_json(self, text_response, thought_sig=None):
         try:
             envelope = json.loads(text_response)
-            inner = envelope.get("result") or envelope.get("structured_output", "")
+            inner = envelope.get("structured_output") or envelope.get("result", "")
             if isinstance(inner, dict):
                 parsed = inner
             else:

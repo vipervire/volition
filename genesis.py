@@ -487,9 +487,7 @@ WantedBy=multi-user.target
 
     print("1. volition-gpu-worker.service")
     print("   - Handles embeddings (Tier-3 memory) and optional local summarization")
-    print("   - Requires either:")
-    print("       * Ollama (local GPU), OR")
-    print("       * OpenRouter (cloud)")
+    print("   - Requires Ollama (local GPU)")
     print("   - Default configuration assumes Ollama")
     print("   - Required Ollama models if used:")
     print("       * nomic-embed-text")

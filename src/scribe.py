@@ -75,6 +75,9 @@ async def _call_claude_cli(model_name: str, prompt_text: str) -> str:
         "--system-prompt", "You are a log analysis scribe. Produce clean markdown summaries. Do not use any tools.",
         "--output-format", "json",
         "--max-turns", "1",
+        "--tools", "",
+        "--no-session-persistence",
+        "--disable-slash-commands",
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd,

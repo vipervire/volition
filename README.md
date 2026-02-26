@@ -207,7 +207,6 @@ You may run this service on:
 Backend options:
 
 * **Ollama (default)**
-* **OpenRouter (cloud)**
 
 ---
 
