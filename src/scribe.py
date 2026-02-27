@@ -31,12 +31,6 @@ from typing import Any, Dict, Optional
 
 import redis.asyncio as redis
 
-# We import google.genai conditionally or just import it (assuming env has it)
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    genai = None
 
 # --- Configuration ---
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL")
@@ -140,7 +134,7 @@ async def run_llm_generation(model_name: str, prompt_text: str) -> str:
 async def main():
     parser = argparse.ArgumentParser(description="Volition Scribe")
     # UPDATED DEFAULT
-    parser.add_argument("--model", default="google/gemini-3-flash-preview", help="Model to use")
+    parser.add_argument("--model", default=os.environ.get("MODEL_SCRIBE", "nanbeige-4.1-3b"), help="Model to use")
     parser.add_argument("--prompt-file", required=True, help="Path to file containing the prompt")
     parser.add_argument("--output-inbox", required=True, help="Redis list key to push results to")
     parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL, help="Redis connection URL")
