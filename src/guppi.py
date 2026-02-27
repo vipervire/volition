@@ -1938,7 +1938,7 @@ You were asleep for: {time_str}
         tools = {
             "shell": "Execute local shell command. Args: command",
             "remote_exec": "Execute remote SSH command. Args: host, command",
-            "spawn_scribe": "Spawn tasker process. Args: prompt, prompt_file (optional), model, mode (summarize|vectorize). NOTE: 'vectorize' offloads to GPU queue.",
+            "spawn_scribe": "Spawn tasker process. Args: prompt (instructions), prompt_file (optional, path to bulk data file), model, mode (summarize|vectorize). GUPPI merges prompt+prompt_file so you never need to inline file contents. Use prompt alone, prompt_file alone, or both together. NOTE: 'vectorize' requires prompt_file and offloads to GPU queue.",
             "rag_search": "Search vector memory. Args: query",
             "todo_list": "List tasks. Args: filter (due|upcoming|all)",
             "todo_add": "Add task. Args: task, priority, due",
