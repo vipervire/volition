@@ -1509,72 +1509,66 @@ class GuppiDaemon:
     async def call_abe_api(self, prompt_text: str, model_id: str = GEMINI_MODEL) -> Dict:
         # Everything routes through the OpenAI-compatible endpoint now
         return await self._call_openai_compat(model_id, prompt_text)
-
-    async def _call_google(self, model_id, prompt):
-        if not GEMINI_API_KEY:
-             logger.error("GEMINI_API_KEY missing. Returning hibernate.")
-             return {"reasoning": "Missing Gemini API Key", "action": {"tool": "hibernate"}}
-        
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={GEMINI_API_KEY}"
-        headers = {'Content-Type': 'application/json'}
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"}
-        }
-
-        async with aiohttp.ClientSession() as session:
-            # [NEW] 7.8: INCREASED TIMEOUT to 180s
-            async with session.post(url, headers=headers, json=payload, timeout=300) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    logger.error(f"API Error {resp.status} on {model_id}: {err}")
-                    return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
-                
-                data = await resp.json()
-                candidate = data.get("candidates", [])[0]
-                content_parts = candidate.get("content", {}).get("parts", [])
-                
-                text_response = ""
-                thought_sig = None
-                for part in content_parts:
-                    if "text" in part: text_response += part["text"]
-                    if "thoughtSignature" in part: thought_sig = part["thoughtSignature"]
-                        
-                return self._clean_json(text_response, thought_sig)
-
-    async def _call_openrouter(self, model_alias, prompt):
-        model_id = model_alias
-        use_thinking = ":thinking" in model_id
-        if use_thinking: model_id = model_id.split(":")[0]
+    
+    async def _call_openai_compat(self, model_id, prompt):
+        # Pull from env, default to OpenRouter if not set
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+        api_key = os.environ.get("OPENAI_API_KEY", OPENROUTER_API_KEY)
             
-        url = "https://openrouter.ai/api/v1/chat/completions"
+        # Prevent double-slashes if base_url has a trailing slash
+        base_url = base_url.rstrip('/')
+        url = f"{base_url}/chat/completions"
+        
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "HTTP-Referer": OPENROUTER_SITE_URL,
             "X-Title": OPENROUTER_APP_NAME,
             "Content-Type": "application/json"
         }
         
+        
         payload = {
             "model": model_id,
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"}
+            "messages": [{"role": "user", "content": prompt}]
         }
-        
-        if use_thinking:
-            payload["reasoning"] = {"effort": "high"}
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload, timeout=300) as resp:
                 if resp.status != 200:
                     err = await resp.text()
-                    logger.error(f"OpenRouter Error {resp.status}: {err}")
-                    return {"reasoning": f"OR Error: {resp.status}", "action": {"tool": "hibernate"}}
+                    logger.error(f"OpenAI-Compat Error {resp.status}: {err}")
+                    return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
+                
                 data = await resp.json()
                 choice = data["choices"][0]
-                text = choice["message"]["content"]
+                message = choice["message"]
                 
+                text = message.get("content", "")
+                
+                # 1. Grab native reasoning content (o1 / llama.cpp style)
+                reasoning = message.get("reasoning_content", "")
+                
+                # 2. Fallback: If the model stuffed <think> tags into the main content block
+                if not reasoning and "<think>" in text:
+                    think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
+                    if think_match:
+                        reasoning = think_match.group(1).strip()
+                        # Strip the thinking block from the main text so we only parse the JSON
+                        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+                
+                # 3. Offload the internal monologue to a forensic log (Chunked by Date)
+                if reasoning:
+                    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                    thoughts_file = ABE_ROOT / f"logs/thoughts/{self.abe_name}-{today_str}.thot"
+                    thoughts_file.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    with open(thoughts_file, "a") as f:
+                        ts = datetime.utcnow().isoformat()
+                        f.write(f"\n--- [THOUGHT BURST: {ts}] ---\n{reasoning}\n--- [END] ---\n")
+                
+                # 4. Pass the pristine JSON to the cleaner
                 return self._clean_json(text, thought_sig=None)
+
 
     def _clean_json(self, text_response, thought_sig=None):
         try:
