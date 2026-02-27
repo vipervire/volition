@@ -11,7 +11,11 @@ Status: RELEASE 6.5.2
 - DEPRECATION: 'vectorize' mode is disabled. Use GUPPI GPU Offload.
 
 Usage:
+  # prompt-file only (file contains full prompt):
   python3 scribe.py --model haiku --prompt-file /tmp/p.txt --output-inbox inbox:matt-01 --meta '{"source": "log-1"}'
+
+  # Note: when spawned via GUPPI's spawn_scribe, prompt+prompt_file are merged by GUPPI
+  # into a single temp file before scribe.py is called. Scribe always receives one file.
 
 Dependencies:
   pip install redis aiohttp
