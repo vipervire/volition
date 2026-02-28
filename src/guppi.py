@@ -91,6 +91,8 @@ ACTION_SCHEMA = json.dumps({
 # v6.5: Split-Brain Config
 MODEL_PRO = os.environ.get("MODEL_PRO", "opus")
 MODEL_FLASH = os.environ.get("MODEL_FLASH", "haiku")
+MODEL_SCRIBE = os.environ.get("MODEL_SCRIBE", "local/nanbeige-4.1-3B")
+MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "local/mistral")
 
 # v7.0: Social Stream Config
 SOCIAL_DIGEST_STREAM = "volition:social_digests"
@@ -1715,7 +1717,12 @@ You were asleep for: {time_str}
                 mode = action.get("mode", "summarize")
                 prompt_file_path = action.get("prompt_file")
                 prompt_text = action.get("prompt", "")
-                model = action.get("model", MODEL_FLASH)
+                if mode == "analyze":
+                    model = action.get("model", MODEL_SCRIBE)
+                elif mode == "summarize":
+                    model = action.get("model", MODEL_SUMMARIZE)
+                else:
+                    model = action.get("model", MODEL_FLASH)
 
                 # v6.5: Intercept Vectorize requests
                 if mode == "vectorize":
@@ -1733,10 +1740,11 @@ You were asleep for: {time_str}
                                 vec_task_id = f"vec-{turn_id}" 
                                 
                                 task_payload = {
-                                    "task_id": vec_task_id, # <--- Use the prefixed ID
+                                    "task_id": vec_task_id,
                                     "type": "embed",
-                                    "content": content, 
-                                    "reply_to": f"inbox:{self.abe_name}"
+                                    "content": content,
+                                    "source_file": str(p_path.resolve()),
+                                    "reply_to": self.internal_queue
                                 }
                                 await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
                                 result = {"status": "offloaded_to_gpu", "note": "Content sent to GPU for embedding. You will be notified."}
@@ -1919,9 +1927,8 @@ You were asleep for: {time_str}
         # Only silence administrative state changes. 
         # Chat, Email, and Shell MUST notify on success.
         quiet_tools = {
-            "todo_add", 
             "snooze_task",
-            "hibernate" 
+            "hibernate"
         }
         
         should_notify = True
@@ -2162,9 +2169,16 @@ You were asleep for: {time_str}
             
             if not vector or not task_id.startswith("vec-"): return False
 
-            ts_id = task_id.replace("vec-", "")
-            ep_filename = f"ep-{ts_id}.md"
-            ep_path = EPISODES_DIR / ep_filename
+            source_file = result_payload.get("source_file")
+            if source_file:
+                ep_path = Path(source_file)
+                ep_filename = ep_path.name
+                doc_type = "manual_ingest"
+            else:
+                ts_id = task_id.replace("vec-", "")
+                ep_filename = f"ep-{ts_id}.md"
+                ep_path = EPISODES_DIR / ep_filename
+                doc_type = "tier_2_episode"
 
             if not ep_path.exists():
                 logger.warning(f"Original episode file not found for vector: {ep_path}")
@@ -2174,7 +2188,7 @@ You were asleep for: {time_str}
             meta = {
                 "source": ep_filename,
                 "ingested_at": datetime.utcnow().isoformat(),
-                "type": "tier_2_episode"
+                "type": doc_type
             }
 
             def _insert_sync():

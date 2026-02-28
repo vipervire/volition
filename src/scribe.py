@@ -31,6 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import aiohttp
 import redis.asyncio as redis
 
 # --- Configuration ---
@@ -39,6 +40,8 @@ VECTOR_DB_PATH = Path(os.environ.get("MEMORY_DIR", "./memory")) / "vector.db"
 
 CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "haiku")
+LOCAL_API_URL = os.environ.get("LOCAL_API_URL", "http://localhost:8080/v1")
+LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "not-needed")
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [SCRIBE] - %(levelname)s - %(message)s")
@@ -69,7 +72,9 @@ async def push_result(redis_url: str, inbox: str, event_type: str, content: Any,
         sys.exit(1)
 
 async def run_llm_generation(model_name: str, prompt_text: str) -> str:
-    """Dispatches to Claude CLI."""
+    """Routes to local API or Claude CLI based on model prefix."""
+    if model_name.startswith("local/"):
+        return await _call_local_api(model_name, prompt_text)
     return await _call_claude_cli(model_name, prompt_text)
 
 async def _call_claude_cli(model_name: str, prompt_text: str) -> str:
@@ -111,6 +116,37 @@ async def _call_claude_cli(model_name: str, prompt_text: str) -> str:
     except Exception:
         return raw
 
+async def _call_local_api(model_name: str, prompt_text: str) -> str:
+    """Calls a local OpenAI-compatible API (e.g., llama.cpp)."""
+    actual_model = model_name.removeprefix("local/")
+    payload = {
+        "model": actual_model,
+        "messages": [
+            {"role": "system", "content": "You are a log analysis scribe. Produce clean markdown summaries."},
+            {"role": "user", "content": prompt_text}
+        ],
+        "temperature": 0.3
+    }
+    headers = {
+        "Authorization": f"Bearer {LOCAL_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        url = f"{LOCAL_API_URL}/chat/completions"
+        async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
+            if resp.status != 200:
+                error_body = await resp.text()
+                raise Exception(f"Local API error ({resp.status}): {error_body}")
+            data = await resp.json()
+
+            content = data["choices"][0]["message"]["content"]
+            # Strip <think> tags if present (local models may include reasoning)
+            if "<think>" in content:
+                import re
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            return content
+
 async def main():
     parser = argparse.ArgumentParser(description="Volition Scribe")
     parser.add_argument("--model", default=CLAUDE_MODEL, help="Model to use")
@@ -122,7 +158,7 @@ async def main():
     parser.add_argument("--meta", default=None, help="JSON string of metadata to pass back to GUPPI")
     
     # Operation mode
-    parser.add_argument("--mode", default="summarize", choices=["summarize", "vectorize"], help="Operation mode")
+    parser.add_argument("--mode", default="summarize", choices=["summarize", "vectorize", "analyze"], help="Operation mode")
 
     args = parser.parse_args()
 
@@ -159,6 +195,16 @@ async def main():
                 args.redis_url, 
                 args.output_inbox, 
                 "TaskCompleted", 
+                result_text,
+                meta=meta
+            )
+
+        elif args.mode == "analyze":
+            result_text = await run_llm_generation(args.model, prompt_text)
+            await push_result(
+                args.redis_url,
+                args.output_inbox,
+                "TaskCompleted",
                 result_text,
                 meta=meta
             )
