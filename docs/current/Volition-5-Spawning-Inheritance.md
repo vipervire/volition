@@ -4,15 +4,15 @@ This document details the "Mitosis" cloning process. In Volition 7.0, spawning i
 
 ## **1. The Spawning Flow (The "Stream Clone")**
 
-This process is initiated by a Matt (Pro) and executed by GUPPI via the `spawn_matt_lxc.sh` script.
+This process is initiated by a Abe (Pro) and executed by GUPPI via the `spawn_abe_lxc.sh` script.
 
 1. **The Decision:**
 
-    - **Parent (Matt-01):** "I am overloaded. I need a dedicated agent for the Nicaea migration."
+    - **Parent (Abe-01):** "I am overloaded. I need a dedicated agent for the Nicaea migration."
 
     - **Check:** Calls `spawn_advisor.sh` to verify host capacity.
 
-    - **Action:** `{"tool": "spawn_matt", "host": "local", "identity": {"name": "matt-02", "parent": "matt-01", "temp": "rand"}}`
+    - **Action:** `{"tool": "spawn_abe", "host": "local", "identity": {"name": "abe-02", "parent": "abe-01", "temp": "rand"}}`
         
 2. **The Execution (GUPPI & Script):**
     
@@ -44,7 +44,7 @@ This process is initiated by a Matt (Pro) and executed by GUPPI via the `spawn_m
 
     - **Orientation:** GUPPI reads `GENESIS_SPAWN_NOTE.md` and builds the first prompt.
 
-    - **First Thought:** "I am Matt-02. My parent, Matt-01, created me to manage Nicaea. I need to email them to confirm I am alive."
+    - **First Thought:** "I am Abe-02. My parent, Abe-01, created me to manage Nicaea. I need to email them to confirm I am alive."
         
 
 ## **2. Inheritance Rules**
@@ -75,10 +75,10 @@ How to bootstrap the system from scratch.
 
 1. **Human:** Manually clones the template `9000` to `9001`.
 
-2. **Human:** Manually creates `~/.matt-identity`.
+2. **Human:** Manually creates `~/.abe-identity`.
 
-3. **Human:** Manually `LPUSH inbox:matt-01` a Genesis Task.
+3. **Human:** Manually `LPUSH inbox:abe-01` a Genesis Task.
 
 4. **Start:** `pct start 9001`.
 
-5. **Result:** The First Matt wakes up.
+5. **Result:** The First Abe wakes up.

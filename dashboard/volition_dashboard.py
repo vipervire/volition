@@ -79,7 +79,7 @@ class RedisManager:
         }
         await self.redis.xadd(channel, entry)
 
-    async def send_email(self, target: str, content: str, sender: str = "Human-Matt"):
+    async def send_email(self, target: str, content: str, sender: str = "Human-Abe"):
         key = f"inbox:{target}"
         msg = {
             "from": sender,
@@ -91,7 +91,7 @@ class RedisManager:
 
         log_entry = {
             "id": f"human-{int(time.time())}",
-            "type": "MattTurn",
+            "type": "AbeTurn",
             "agent": sender,
             "timestamp_intent": datetime.utcnow().isoformat(),
             "status": "completed",
@@ -299,7 +299,7 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 msg = json.loads(data)
                 action = msg.get("action")
-                sender = msg.get("sender", "Human-Matt") # Identity Support
+                sender = msg.get("sender", "Human-Abe") # Identity Support
 
                 if action == "post":
                     channel = msg.get("channel")

@@ -1,18 +1,18 @@
 ##### Home
 
-{{ DELETE THIS MESSAGE: I have heavily redacted this file to remove sensitive information about my home network and services. This is a template/example file for others to use as reference when documenting their own home lab/services for the Mattiverse. Thank you! -Matt }}
+{{ DELETE THIS MESSAGE: I have heavily redacted this file to remove sensitive information about my home network and services. This is a template/example file for others to use as reference when documenting their own home lab/services for the Abiverse. Thank you! -Abe }}
 
-{{ This is a template file. You should delete the contents of this file and populate this with your own home lab/services information. Make sure this is extensive as this will be the single source of truth for your services and home lab for the Mattiverse. -Matt }}
+{{ This is a template file. You should delete the contents of this file and populate this with your own home lab/services information. Make sure this is extensive as this will be the single source of truth for your services and home lab for the Abiverse. -Abe }}
 
 
 -------------
 
 Most of the hostnames are done in style of Iain M Banks' Culture. Not 1:1 from the books, and not too on the nose but a subtle nod at what a service/container/VM does.
-MAIN_SERVER, VPS_2, VPS_1, VPS_4, VPS_3 [redacted] are legacy names. They were some of my very first servers. -Matt
+MAIN_SERVER, VPS_2, VPS_1, VPS_4, VPS_3 [redacted] are legacy names. They were some of my very first servers. -Abe
 
 Almost every single node/server/device is connected via wireguard, most are connected through headscale.
 
-Router: 10.x.x.1 - user: root, pw: [REDACTED] . Matts: You can ssh to it if needed, but please notify me in case you want to change something and wait for my response. Default password for most of my services is [REDACTED].
+Router: 10.x.x.1 - user: root, pw: [REDACTED] . Abes: You can ssh to it if needed, but please notify me in case you want to change something and wait for my response. Default password for most of my services is [REDACTED].
 
 
 | Hostname                    | Hardware                 | CPU                           | RAM  | OS                        | IPs                                                                         |
@@ -24,7 +24,7 @@ Router: 10.x.x.1 - user: root, pw: [REDACTED] . Matts: You can ssh to it if need
 | VPS_3                     | Oracle VPS               | x86/64                        | 1G   | Ubuntu Server 22.04 LTS   | [PUBLIC_IP] (static) 10.1.1.XX (WG) VPS_3 (headscale)                  |
 | VPS_2                     | Oracle VPS               | 3Core Ampere A1               | 16G  | Ubuntu Server 24.04 LTS   | [PUBLIC_IP] (static) 10.1.1.XX (WG), VPS_2 (headscale)                   |
 | VPS_1                      | Oracle VPS               | 1Core Ampere A1               | 8G   | Ubuntu Server 24.04 LTS   | [PUBLIC_IP] (static), 10.1.1.XX (WG), VPS_1 (headscale)                 |
-| lcu-a-matter-of-protocol    | SoftShellWeb VPS         | 1 core 3.0GHz(Xeon Gold)      | 1G   | Ubuntu server             | [PUBLIC_IP] (static), 10.1.1.XX ( WG)                                       |
+| lcu-a-abeer-of-protocol    | SoftShellWeb VPS         | 1 core 3.0GHz(Xeon Gold)      | 1G   | Ubuntu server             | [PUBLIC_IP] (static), 10.1.1.XX ( WG)                                       |
 | VPS_4                      | Google VPS               | 1 vCPU (Intel Xeon @ 2.20GHz) | 1G   | Ubuntu Server 24.04 LTS   | [PUBLIC_IP] (static), 10.1.1.XX (WG)                                         |
 |                             |                          |                               |      |                           |                                                                             |
 
@@ -38,7 +38,7 @@ Virtual Machines/LXC Containers inside `GSV-Careful-Orchestration`:
 | lxc     | 104 (its-probably-u-but-lets-check)            | 10.0.0.XX, 10.1.1.XX                                     | PocketID OAuth instance                                                                             |
 | lxc     | 105 (scu-i-know-a-guy)                         | 10.0.0.XX                                                   | Adblock Instance                                              |
 | lxc     | 106 (scu-the-courtesy-of-a-reply)              | 10.0.0.XX                                                   | Currently Inactive PXEboot instance                                                                 |
-| lxc     | 107 (volition-stream)                          | 10.0.0.XX, 10.1.1.XX                                     | Redis for Matts                                                                                      |
+| lxc     | 107 (volition-stream)                          | 10.0.0.XX, 10.1.1.XX                                     | Redis for Abes                                                                                      |
 | lxc     | 201 (remote-courtesy)                          | 10.0.0.XX, 10.1.1.XX                                      | Guacamole Instance, currently running RDP                                            |
 |         |                                                |                                                            |                                                                                                     |
 | qemu    | 100 (rou-ofc-i-know-where-ur-keys-are)         | 10.0.0.XX, 172.30.232.1, 172.30.32.1                       | Homeassistant                                                                                       |
@@ -54,7 +54,7 @@ Virtual Machines/LXC Containers inside `GSV-Careful-Orchestration`:
 
 ###### Virtual Machines/LXC Containers inside `GSV-Contents-Under-Pressure`:
 
-Currently none. Matts will be hosted here, populate this list as matts come online.
+Currently none. Abes will be hosted here, populate this list as abes come online.
 
 
 ###### Containers/Services Inside SLV-wdym-buffering

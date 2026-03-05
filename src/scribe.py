@@ -12,7 +12,7 @@ Status: RELEASE 6.5.2
 
 Usage:
   # prompt-file only (file contains full prompt):
-  python3 scribe.py --model haiku --prompt-file /tmp/p.txt --output-inbox inbox:matt-01 --meta '{"source": "log-1"}'
+  python3 scribe.py --model haiku --prompt-file /tmp/p.txt --output-inbox inbox:abe-01 --meta '{"source": "log-1"}'
 
   # Note: when spawned via GUPPI's spawn_scribe, prompt+prompt_file are merged by GUPPI
   # into a single temp file before scribe.py is called. Scribe always receives one file.
@@ -48,7 +48,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - [SCRIBE] - %(level
 logger = logging.getLogger("scribe")
 
 async def push_result(redis_url: str, inbox: str, event_type: str, content: Any, meta: Dict = None):
-    """Pushes the final result to the parent Matt's inbox."""
+    """Pushes the final result to the parent Abe's inbox."""
     if meta is None:
         meta = {}
     
@@ -213,7 +213,7 @@ async def main():
             # v6.4 BREAKING CHANGE
             error_msg = "Critical: Local vectorization is disabled in Volition 6.4. Use GUPPI GPU Offload (Nomic)."
             logger.error(error_msg)
-            # We report failure back to inbox so Matt knows not to wait
+            # We report failure back to inbox so Abe knows not to wait
             await push_result(
                 args.redis_url,
                 args.output_inbox,
