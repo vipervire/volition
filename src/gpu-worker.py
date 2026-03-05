@@ -119,6 +119,7 @@ async def process_task(r: redis.Redis, session: aiohttp.ClientSession, raw_task:
     task_type = task.get("type")
     content = task.get("content")
     reply_to = task.get("reply_to")
+    source_file = task.get("source_file")
 
     logger.info(f"Processing Task {task_id} [{task_type}] -> {reply_to}")
 
@@ -165,6 +166,7 @@ async def process_task(r: redis.Redis, session: aiohttp.ClientSession, raw_task:
             "task_id": task_id,
             "status": "success" if result_data else "error",
             "content": result_data if result_data else {"error": error_msg},
+            "source_file": source_file,
             "meta": {
                 "worker": "gpu_5070ti",
                 "model": model_meta
