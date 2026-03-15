@@ -47,10 +47,6 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "https://volition.indoria.org")
 OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
 
-DEFAULT_API_URL = os.environ.get("ROAMER_API_URL") 
-DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY", "volition-local") # <--- Standardize on OPENAI_API_KEY
-DEFAULT_MODEL = os.environ.get("MODEL_ROAMER", "local/qwen-2.5-14b-coder") # <--- Add local/ prefix
-
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [SCRIBE] - %(levelname)s - %(message)s")
