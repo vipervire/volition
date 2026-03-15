@@ -246,6 +246,7 @@ class GuppiDaemon:
         self._stopping = False
         self._bg_tasks: List[asyncio.Task] = []
         self._is_pruning = False
+        self.pending_vector_tasks = {}
         
         self.processed_triggers = {}
         self.processed_triggers_ttl = 90
@@ -1786,7 +1787,7 @@ You were asleep for: {time_str}
 
             elif tool == "spawn_scribe":
                 mode = action.get("mode", "summarize")
-                prompt_file_path = action.get("prompt_file")
+                prompt_file_path = action.get("prompt_file") or action.get("target_file")
                 prompt_text = action.get("prompt", "")
                 
                 # Enforce routing rules based on the Genesis prompt promises
@@ -1810,7 +1811,10 @@ You were asleep for: {time_str}
                                 
                                 # [FIX] Enforce 'vec-' prefix so _handle_vector_result accepts it
                                 # If turn_id is "turn-123", this becomes "vec-turn-123"
-                                vec_task_id = f"vec-{turn_id}" 
+                                vec_task_id = f"vec-{turn_id}"
+
+                                # Statelessly stash the path in Redis for 1 hour (3600s)
+                                await retry_async(self.r.set, f"vec_meta:{vec_task_id}", str(p_path.resolve()), ex=3600)
                                 
                                 task_payload = {
                                     "task_id": vec_task_id,
@@ -2242,8 +2246,14 @@ You were asleep for: {time_str}
             
             if not vector or not task_id.startswith("vec-"): return False
 
-            # Check if this was a manually requested file vectorization
-            source_file = result_payload.get("source_file")
+            # Retrieve the path from Redis (stateless)
+            source_file = await self.r.get(f"vec_meta:{task_id}")
+            if source_file:
+                # Clean up the key so we don't litter Redis
+                await self.r.delete(f"vec_meta:{task_id}")
+            else:
+                # If it's not in Redis, check if it was echoed back, just in case
+                source_file = result_payload.get("source_file")
             
             if source_file:
                 ep_path = Path(source_file)
