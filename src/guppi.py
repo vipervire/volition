@@ -246,7 +246,6 @@ class GuppiDaemon:
         self._stopping = False
         self._bg_tasks: List[asyncio.Task] = []
         self._is_pruning = False
-        self.pending_vector_tasks = {}
         
         self.processed_triggers = {}
         self.processed_triggers_ttl = 90
