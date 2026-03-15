@@ -1,7 +1,10 @@
->Volition has been running continuously in my personal infrastructure with multiple agents for more than a month now.
+>Volition is currently in Public Alpha 0.8.0 (My internal mature versioning is ~8.0)
+>Volition has been running continuously in my personal infrastructure with multiple agents for more than two months now.
 However, this public release is new and has not yet been exercised end-to-end by external users.
 >Expect rough edges in: setup and documentation flow, first-run ergonomics, and non-default configurations
->Core architecture and invariants are stable, but installation paths will be refined over the next few days as this release is tested in the open.
+>Core architecture and invariants are stable, but installation paths will be refined over the next few weeks as this release is tested in the open.
+
+
 
 
 # Volition

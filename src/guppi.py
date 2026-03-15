@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""GUPPI daemon - Volition 7.8 (The Safety Update)
-The "Body" of the Abe Agent.
-
-Status: STABLE RELEASE 7.8
-- Architecture: Refractory Scheduler (Hot Senses / Paced Workload)
-- Logic: STRICT 7.2.3.1 COMPLIANCE
-- Feature: Clipboard (Persistent Scratchpad)
-- Safety: Deadman Switch (Anti-Ghosting)
-- Safety: Output Machete (Source Truncation)
+"""GUPPI daemon - Volition 8.0.0-rc1 (The Roamer/Scribe Update)
+Status: STABLE
+- Feature: Allow Roamers and Scribes Separately
+- Feature: Merge different Provider calls into one
 """
 
 import asyncio
@@ -78,23 +73,21 @@ REDIS_URL = os.environ.get("REDIS_URL", f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}
 NTFY_URL = os.environ.get("NTFY_URL")
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN")
 
-if not NTFY_URL or not NTFY_TOKEN:
-    logger.warning("NTFY not configured; human notifications disabled.")
 
 # v6.1: Search Config
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "https://civitat.es/search") 
 
 # API Config
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "google")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "https://volition.indoria.org")
 OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
 
 # v6.5: Split-Brain Config
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro") 
-MODEL_PRO = os.environ.get("OPENROUTER_MODEL_PRO") or os.environ.get("GEMINI_MODEL_PRO") or GEMINI_MODEL
-MODEL_FLASH = os.environ.get("OPENROUTER_MODEL_FLASH") or os.environ.get("GEMINI_MODEL_FLASH", "gemini-2.5-flash")
+# Defaulting to standard model names so they map cleanly via OpenRouter or Local
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview") 
+MODEL_PRO = os.environ.get("MODEL_PRO", "google/gemini-3-flash-preview:thinking")
+MODEL_FLASH = os.environ.get("MODEL_FLASH", "google/gemini-3-flash-preview")
+MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "local/mistral") 
 
 # v7.0: Social Stream Config
 SOCIAL_DIGEST_STREAM = "volition:social_digests"
@@ -124,6 +117,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("guppi")
 
+if not NTFY_URL or not NTFY_TOKEN:
+    logger.warning("NTFY not configured; human notifications disabled.")
+    
 
 # --- UTILITY HELPERS ---
 
@@ -696,62 +692,62 @@ class GuppiDaemon:
         self._is_pruning = True
         logger.info("[PRUNE] method _is_pruning set TRUE")
         try:
-          ts = int(time.time())
-          archive_path = ARCHIVE_DIR / f"log-{ts}.jsonl"
-          try: shutil.copy2(WORKING_LOG, archive_path)
-          except: pass
-          try:
-              log_content = archive_path.read_text()
-          except Exception as e:
-              log_content = f"Error reading log: {e}"
+            ts = int(time.time())
+            archive_path = ARCHIVE_DIR / f"log-{ts}.jsonl"
+            try: shutil.copy2(WORKING_LOG, archive_path)
+            except: pass
+            try:
+                log_content = archive_path.read_text()
+            except Exception as e:
+                log_content = f"Error reading log: {e}"
 
-          # v7.1: Improved Narrative Prompt
-          prompt = (
-              f"Synthesize these logs into a Tier 2 Episode Memory.\n"
-              f"Focus on the NARRATIVE arc of what you accomplished or discovered.\n"
-              f"IGNORE trivial mechanical steps (e.g., successful 'ls' or 'cd' commands) unless they revealed something critical.\n"
-              f"If you were asleep or idle, state that clearly and briefly.\n\n"
-              f"REQUIRED OUTPUT FORMAT:\n\n"
-              f"## Narrative Summary\n"
-              f"(A 2-3 sentence overview of the episode's main events)\n\n"
-              f"## Key Decisions & Outcomes\n"
-              f"(Bullet points of meaningful choices made and their results)\n\n"
-              f"## Changed State / New Knowledge\n"
-              f"(What is different now compared to the start? New files? New constraints?)\n\n"
-              f"## Pending / Unresolved\n"
-              f"(Only list actual blockers or unfinished tasks that require future attention that WERE in the logs, Do not make assumptions.)\n\n"
-              f"Source log:\n{log_content}"
-          )
-          
-          with tempfile.NamedTemporaryFile('w', delete=False) as pf:
-              pf.write(prompt)
-              prompt_path = pf.name
-          
-          meta_json = json.dumps({
-              "maintenance": True,
-              "source_tier_1": f"log-{ts}.jsonl",
-              "mode": "summarize" 
-          })
-          
-          # v7.1: Use Pro model (Thinking) for better synthesis quality
-          current_model = MODEL_PRO or "google/gemini-3-flash-preview:thinking"
-          
-          cmd = [
-              sys.executable, str(BIN_DIR / "scribe.py"), 
-              "--model", current_model, 
-              "--prompt-file", prompt_path, 
-              "--output-inbox", f"inbox:{self.abe_name}",
-              "--mode", "summarize",
-              "--meta", meta_json
-          ]
-          await self._spawn_subprocess_exec(f"auto-prune-{ts}", cmd, tracked=False)
+            # v7.1: Improved Narrative Prompt
+            prompt = (
+                f"Synthesize these logs into a Tier 2 Episode Memory.\n"
+                f"Focus on the NARRATIVE arc of what you accomplished or discovered.\n"
+                f"IGNORE trivial mechanical steps (e.g., successful 'ls' or 'cd' commands) unless they revealed something critical.\n"
+                f"If you were asleep or idle, state that clearly and briefly.\n\n"
+                f"REQUIRED OUTPUT FORMAT:\n\n"
+                f"## Narrative Summary\n"
+                f"(A 2-3 sentence overview of the episode's main events)\n\n"
+                f"## Key Decisions & Outcomes\n"
+                f"(Bullet points of meaningful choices made and their results)\n\n"
+                f"## Changed State / New Knowledge\n"
+                f"(What is different now compared to the start? New files? New constraints?)\n\n"
+                f"## Pending / Unresolved\n"
+                f"(Only list actual blockers or unfinished tasks that require future attention that WERE in the logs, Do not make assumptions.)\n\n"
+                f"Source log:\n{log_content}"
+            )
+            
+            with tempfile.NamedTemporaryFile('w', delete=False) as pf:
+                pf.write(prompt)
+                prompt_path = pf.name
+            
+            meta_json = json.dumps({
+                "maintenance": True,
+                "source_tier_1": f"log-{ts}.jsonl",
+                "mode": "summarize" 
+            })
+            
+            # v7.1: Use Pro model (Thinking) for better synthesis quality
+            current_model = MODEL_SUMMARIZE
+            
+            cmd = [
+                sys.executable, str(BIN_DIR / "scribe.py"), 
+                "--model", current_model, 
+                "--prompt-file", prompt_path, 
+                "--output-inbox", f"inbox:{self.abe_name}",
+                "--mode", "summarize",
+                "--meta", meta_json
+            ]
+            await self._spawn_subprocess_exec(f"auto-prune-{ts}", cmd, tracked=False)
 
-          async with self.log_lock:
-              self.log_buffer = self.log_buffer[-15:]
-              await self._rewrite_log_file()
+            async with self.log_lock:
+                self.log_buffer = self.log_buffer[-15:]
+                await self._rewrite_log_file()
         finally:
-          logger.info("[PRUNE] EXIT _prune_logs (before reset)")
-          self._is_pruning = False
+            logger.info("[PRUNE] EXIT _prune_logs (before reset)")
+            self._is_pruning = False
 
 
     # --- EVENT & INTENT LOGGING ---
@@ -762,8 +758,8 @@ class GuppiDaemon:
         if isinstance(content, str):
             truncated_content = self._truncate_output(content)
         elif isinstance(content, dict):
-             # Shallow copy to avoid mutating original payload if it's used elsewhere
-             truncated_content = content.copy()
+            # Shallow copy to avoid mutating original payload if it's used elsewhere
+            truncated_content = content.copy()
         else:
             truncated_content = content
         evt_id = f"evt-{uuid.uuid4().hex[:8]}"
@@ -854,8 +850,11 @@ class GuppiDaemon:
             meta = norm["observed"].get("meta", {})
             content = str(norm["observed"].get("content", ""))
             
-            # v6.5: Safer Check (Restored from 6.4.3)
-            if meta.get("mode") == "summarize" and content:
+            # THE FIX: Extract the event type safely from the payload envelope
+            event_type = norm["observed"].get("event_type", norm["observed"].get("event", ""))
+            
+            # THE FIX: Only ingest if Scribe actually succeeded (TaskCompleted)
+            if meta.get("mode") == "summarize" and content and event_type == "TaskCompleted":
                 source_file = meta.get("source_tier_1", "unknown_source.jsonl")
                 summary_text = content
                 
@@ -866,12 +865,14 @@ class GuppiDaemon:
                 ep_path = EPISODES_DIR / filename
 
                 if not summary_text.strip().startswith("---"):
-                    current_model = MODEL_FLASH or "gemini-3-flash-preview"
-                    header = f"---\ngenerated_at: {iso_ts}\ntype: tier_2_episode\nmodel: {current_model}\nsource_tier_1: {source_file}\n---\n\n"
+                    # Pull the actual model name from Scribe's metadata payload
+                    actual_scribe_model = meta.get("model", MODEL_FLASH)
+                    header = f"---\ngenerated_at: {iso_ts}\ntype: tier_2_episode\nmodel: {actual_scribe_model}\nsource_tier_1: {source_file}\n---\n\n"
                     summary_text = header + summary_text
 
                 ep_path.write_text(summary_text)
                 logger.info(f"Ingested Tier 2 Episode: {filename}")
+                
                 # v7.2 Fix: Use Internal Queue for routing
                 task_payload = {
                     "task_id": f"vec-{file_uuid}", 
@@ -1173,7 +1174,7 @@ class GuppiDaemon:
 
         # Generic/Legacy Hook
         if "rag_result" in data:
-             await self.log_guppi_event("InternalResult", data, source="Internal")
+            await self.log_guppi_event("InternalResult", data, source="Internal")
 
     
     async def _fetch_chat_context(self, stream_name, count=5):
@@ -1507,76 +1508,105 @@ class GuppiDaemon:
                 except: pass
 
     async def call_abe_api(self, prompt_text: str, model_id: str = GEMINI_MODEL) -> Dict:
-        if LLM_PROVIDER == "openrouter":
-            return await self._call_openrouter(model_id, prompt_text)
-        else:
-            return await self._call_google(model_id, prompt_text)
-
-    async def _call_google(self, model_id, prompt):
-        if not GEMINI_API_KEY:
-             logger.error("GEMINI_API_KEY missing. Returning hibernate.")
-             return {"reasoning": "Missing Gemini API Key", "action": {"tool": "hibernate"}}
-        
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={GEMINI_API_KEY}"
-        headers = {'Content-Type': 'application/json'}
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"}
-        }
-
-        async with aiohttp.ClientSession() as session:
-            # [NEW] 7.8: INCREASED TIMEOUT to 180s
-            async with session.post(url, headers=headers, json=payload, timeout=300) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    logger.error(f"API Error {resp.status} on {model_id}: {err}")
-                    return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
-                
-                data = await resp.json()
-                candidate = data.get("candidates", [])[0]
-                content_parts = candidate.get("content", {}).get("parts", [])
-                
-                text_response = ""
-                thought_sig = None
-                for part in content_parts:
-                    if "text" in part: text_response += part["text"]
-                    if "thoughtSignature" in part: thought_sig = part["thoughtSignature"]
-                        
-                return self._clean_json(text_response, thought_sig)
-
-    async def _call_openrouter(self, model_alias, prompt):
-        model_id = model_alias
+        # Everything routes through the OpenAI-compatible endpoint now
+        return await self._call_openai_compat(model_id, prompt_text)
+    
+    async def _call_openai_compat(self, model_id, prompt):
+        # 1. Detect Thinking Intent
         use_thinking = ":thinking" in model_id
-        if use_thinking: model_id = model_id.split(":")[0]
+        if use_thinking: 
+            model_id = model_id.split(":")[0]
+
+        # 2. Split-Brain Routing (Local vs Remote)
+        if model_id.startswith("local/"):
+            # For Guppi: os.environ.get("GUPPI_LOCAL_API_URL", ...)
+            # For Scribe: os.environ.get("SCRIBE_API_URL", ...)
+            base_url = os.environ.get("GUPPI_LOCAL_API_URL", "http://127.0.0.1:8080/v1").rstrip('/')
+            api_key = "sk-local-llama"  # Hardcoded dummy key so it stays out of .env
+            actual_model = model_id.replace("local/", "")
+        else:
+            base_url = os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip('/')
+            # Safely check for either env var without throwing a NameError
+            api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+            actual_model = model_id
+            if not api_key:
+                logger.error("FATAL: No remote API key configured. Forcing hibernation.")
+                return {
+                    "reasoning": "Missing remote API credentials (OPENAI_API_KEY or OPENROUTER_API_KEY). I cannot think. Forcing hibernation.",
+                    "action": {"tool": "hibernate"}
+                }
             
-        url = "https://openrouter.ai/api/v1/chat/completions"
+        url = f"{base_url}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "HTTP-Referer": OPENROUTER_SITE_URL,
             "X-Title": OPENROUTER_APP_NAME,
             "Content-Type": "application/json"
         }
+
+        # 1. Load the Identity Stats
+        target_temp = float(self.identity.get("temp", 1.0))
+        target_top_p = float(self.identity.get("top_p", 0.95))
         
+        # 2. Force top_k to be an integer (The "Abe-01" Safety)
+        try:
+            raw_k = self.identity.get("top_k", 40)
+            target_top_k = int(float(raw_k)) # Handles both "40" and "0.9" gracefully
+            if target_top_k < 1: target_top_k = 40 # Sanity check
+        except:
+            target_top_k = 40
+
         payload = {
-            "model": model_id,
+            "model": actual_model,
             "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"}
+            "response_format": {"type": "json_object"},
+            "temperature": target_temp,
+            "top_p": target_top_p,
+            "top_k": target_top_k
         }
-        
-        if use_thinking:
+
+        # 3. Route the Thinking Mechanism
+        # Only OpenRouter needs the explicit flag. llama.cpp handles it natively now.
+        if use_thinking and "openrouter" in base_url.lower():
             payload["reasoning"] = {"effort": "high"}
-        
+
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=300) as resp:
+            async with session.post(url, headers=headers, json=payload, timeout=1200) as resp:
                 if resp.status != 200:
                     err = await resp.text()
-                    logger.error(f"OpenRouter Error {resp.status}: {err}")
-                    return {"reasoning": f"OR Error: {resp.status}", "action": {"tool": "hibernate"}}
+                    logger.error(f"OpenAI-Compat Error {resp.status}: {err}")
+                    return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
+                
                 data = await resp.json()
                 choice = data["choices"][0]
-                text = choice["message"]["content"]
+                message = choice["message"]
                 
+                text = message.get("content", "")
+                
+                # 1. Grab native reasoning content (o1 / llama.cpp style)
+                reasoning = message.get("reasoning_content", "")
+                
+                # 2. Fallback: If the model stuffed <think> tags into the main content block
+                if not reasoning and "<think>" in text:
+                    think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
+                    if think_match:
+                        reasoning = think_match.group(1).strip()
+                        # Strip the thinking block from the main text so we only parse the JSON
+                        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+                
+                # 3. Offload the internal monologue to a forensic log (Chunked by Date)
+                if reasoning:
+                    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                    thoughts_file = ABE_ROOT / f"logs/thoughts/{self.abe_name}-{today_str}.thot"
+                    thoughts_file.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    with open(thoughts_file, "a") as f:
+                        ts = datetime.utcnow().isoformat()
+                        f.write(f"\n--- [THOUGHT BURST: {ts}] ---\n{reasoning}\n--- [END] ---\n")
+                
+                # 4. Pass the pristine JSON to the cleaner
                 return self._clean_json(text, thought_sig=None)
+
 
     def _clean_json(self, text_response, thought_sig=None):
         try:
@@ -1606,8 +1636,8 @@ class GuppiDaemon:
         # v6.5: Identity Priors Injection
         priors = ""
         if PRIORS_STUB_FILE.exists():
-             try: priors = f"\n[IDENTITY_PRIORS]\n{PRIORS_STUB_FILE.read_text().strip()}\n"
-             except: pass
+            try: priors = f"\n[IDENTITY_PRIORS]\n{PRIORS_STUB_FILE.read_text().strip()}\n"
+            except: pass
         
         summaries = ""
         try:
@@ -1735,19 +1765,43 @@ You were asleep for: {time_str}
                 
                 resolved_p = p.resolve()
                 if resolved_p == IDENTITY_FILE.resolve():
-                     self._refresh_identity()
-                     result["note"] = f"Identity hot-reloaded. You are now known as: {self.display_name}"
+                    self._refresh_identity()
+                    result["note"] = f"Identity hot-reloaded. You are now known as: {self.display_name}"
                 elif resolved_p == PRIORS_SOURCE_FILE.resolve():
                     await self._trigger_priors_compression()
                     result["note"] = "Priors updated. Scribe spawned to regenerate stub."
 
                 result["path"] = str(p)
 
+            elif tool == "spawn_roamer":
+                directive = action.get("directive")
+                target_host = action.get("target_host", "local")
+                
+                if not directive:
+                    result = {"status": "error", "message": "Missing directive for roamer"}
+                else:
+                    cmd = [
+                        sys.executable, str(BIN_DIR / "roamer.py"),
+                        "--directive", directive,
+                        "--target-host", target_host,
+                        "--output-inbox", f"inbox:{self.abe_name}"
+                    ]
+                    # Spawn untracked so GUPPI isn't blocked waiting for the investigation
+                    await self._spawn_subprocess_exec(turn_id, cmd, tracked=False)
+                    result = {"status": "spawned_untracked", "note": f"Roamer dispatched to investigate '{target_host}'. Results will arrive in your inbox."}
+
             elif tool == "spawn_scribe":
                 mode = action.get("mode", "summarize")
-                prompt_file_path = action.get("prompt_file")
+                prompt_file_path = action.get("prompt_file") or action.get("target_file")
                 prompt_text = action.get("prompt", "")
-                model = action.get("model", MODEL_FLASH)
+                
+                # Enforce routing rules based on the Genesis prompt promises
+                if mode == "analyze":
+                    model = os.environ.get("MODEL_SCRIBE", "local/nanbeige-4.1-3B")
+                elif mode == "summarize":
+                    model = os.environ.get("MODEL_SUMMARIZE", "local/mistral")
+                else:
+                    model = MODEL_FLASH # Fallback just in case
 
                 # v6.5: Intercept Vectorize requests
                 if mode == "vectorize":
@@ -1762,13 +1816,17 @@ You were asleep for: {time_str}
                                 
                                 # [FIX] Enforce 'vec-' prefix so _handle_vector_result accepts it
                                 # If turn_id is "turn-123", this becomes "vec-turn-123"
-                                vec_task_id = f"vec-{turn_id}" 
+                                vec_task_id = f"vec-{turn_id}"
+
+                                # Statelessly stash the path in Redis for 1 hour (3600s)
+                                await retry_async(self.r.set, f"vec_meta:{vec_task_id}", str(p_path.resolve()), ex=3600)
                                 
                                 task_payload = {
-                                    "task_id": vec_task_id, # <--- Use the prefixed ID
+                                    "task_id": vec_task_id,
                                     "type": "embed",
                                     "content": content, 
-                                    "reply_to": f"inbox:{self.abe_name}"
+                                    "source_file": str(p_path.resolve()), # <--- Pass the file path
+                                    "reply_to": self.internal_queue # <--- Route to internal queue, not inbox directly
                                 }
                                 await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
                                 result = {"status": "offloaded_to_gpu", "note": "Content sent to GPU for embedding. You will be notified."}
@@ -1951,7 +2009,6 @@ You were asleep for: {time_str}
         # Only silence administrative state changes. 
         # Chat, Email, and Shell MUST notify on success.
         quiet_tools = {
-            "todo_add", 
             "snooze_task",
             "hibernate" 
         }
@@ -2083,7 +2140,7 @@ You were asleep for: {time_str}
             # Use 'update_stub' mode to trigger the handler in main loop
             meta_json = json.dumps({"job_type": "update_stub", "maintenance": True})
             # Use current flash model for the compression task
-            current_model = MODEL_FLASH or "gemini-3-flash-preview"
+            current_model = MODEL_FLASH
             
             cmd = [
                 sys.executable, str(BIN_DIR / "scribe.py"),
@@ -2194,19 +2251,35 @@ You were asleep for: {time_str}
             
             if not vector or not task_id.startswith("vec-"): return False
 
-            ts_id = task_id.replace("vec-", "")
-            ep_filename = f"ep-{ts_id}.md"
-            ep_path = EPISODES_DIR / ep_filename
+            # Retrieve the path from Redis (stateless)
+            source_file = await self.r.get(f"vec_meta:{task_id}")
+            if source_file:
+                # Clean up the key so we don't litter Redis
+                await self.r.delete(f"vec_meta:{task_id}")
+            else:
+                # If it's not in Redis, check if it was echoed back, just in case
+                source_file = result_payload.get("source_file")
+            
+            if source_file:
+                ep_path = Path(source_file)
+                ep_filename = ep_path.name
+                doc_type = "manual_ingest"
+            else:
+                # Fallback to automatic Episode logic
+                ts_id = task_id.replace("vec-", "")
+                ep_filename = f"ep-{ts_id}.md"
+                ep_path = EPISODES_DIR / ep_filename
+                doc_type = "tier_2_episode"
 
             if not ep_path.exists():
-                logger.warning(f"Original episode file not found for vector: {ep_path}")
+                logger.warning(f"Original file not found for vector: {ep_path}")
                 return False
 
-            text_body = ep_path.read_text()
+            text_body = ep_path.read_text(encoding="utf-8")
             meta = {
                 "source": ep_filename,
                 "ingested_at": datetime.utcnow().isoformat(),
-                "type": "tier_2_episode"
+                "type": doc_type
             }
 
             def _insert_sync():

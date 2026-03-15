@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scribe.py - Production Scribe Worker for Volition 6.5
+scribe.py - Production Scribe Worker for Volition 8.0.0-rc1
 
 This is the ephemeral "Tasker" process spawned by GUPPI.
 It performs heavy lifting (LLM calls) and reports back via Redis.
@@ -25,18 +25,13 @@ import os
 import sys
 import logging
 import aiohttp
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import redis.asyncio as redis
 
-# We import google.genai conditionally or just import it (assuming env has it)
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    genai = None
 
 # --- Configuration ---
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL")
@@ -51,6 +46,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "https://volition.indoria.org")
 OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
+
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [SCRIBE] - %(levelname)s - %(message)s")
@@ -81,100 +77,76 @@ async def push_result(redis_url: str, inbox: str, event_type: str, content: Any,
         sys.exit(1)
 
 async def run_llm_generation(model_name: str, prompt_text: str) -> str:
-    """Dispatches to the correct provider."""
-    if LLM_PROVIDER == "openrouter":
-        return await _run_openrouter(model_name, prompt_text)
-    else:
-        return await _run_google(model_name, prompt_text)
-
-async def _run_google(model_name: str, prompt_text: str) -> str:
-    """Calls the Gemini API (Native)."""
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY environment variable not set.")
-    if not genai:
-        raise ImportError("google-genai library not installed.")
-
-    # Map friendly names to actual model IDs if needed
-    # Handle explicit google/ prefix if GUPPI sends it
-    model_id = model_name.replace("google/", "")
-    # Strip thinking suffix if passed to native (not supported this way in native yet usually)
-    if ":thinking" in model_id:
-        model_id = model_id.split(":")[0]
-    
-    if "flash" in model_name and "2.5" not in model_name and "3" not in model_name:
-         model_id = "gemini-2.5-flash"
-    
-    logger.info(f"Calling Google LLM: {model_id}")
-    
-    # We wrap synchronous Google call in thread if needed
-    def _call():
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt_text,
-            config=types.GenerateContentConfig(
-                temperature=1.0, 
-            )
-        )
-        return response.text
-
-    return await asyncio.to_thread(_call)
-
-async def _run_openrouter(model_name: str, prompt_text: str) -> str:
-    """Calls OpenRouter."""
-    if not OPENROUTER_API_KEY:
-        raise ValueError("OPENROUTER_API_KEY environment variable not set.")
-    
-    # --- FIX: Generic Auto-Correction & Thinking Support ---
+    """Unified OpenAI-Compatible execution for Scribe."""
     model_id = model_name
-    use_thinking = False
-    
-    # 1. Check for Thinking Suffix
-    if ":thinking" in model_id:
-        model_id = model_id.split(":")[0]
-        use_thinking = True
-    
-    # 2. If it doesn't have a provider prefix (no slash), and looks like gemini...
-    if "/" not in model_id and "gemini" in model_id.lower():
-        # Prepend google/
-        model_id = f"google/{model_id}"
+    use_thinking = ":thinking" in model_id
+    if use_thinking: model_id = model_id.split(":")[0]
+
+    # 2. Split-Brain Routing (Local vs Remote)
+    if model_id.startswith("local/"):
+        base_url = os.environ.get("SCRIBE_API_URL", "http://127.0.0.1:8080/v1").rstrip('/')
+        api_key = "sk-local-llama"  # Hardcoded dummy key so it stays out of .env
+        actual_model = model_id.replace("local/", "")
+    else:
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1").rstrip('/')
+        # Safely check for either env var without throwing a NameError
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("No remote API key configured. Scribe cannot run.")
+        actual_model = model_id
         
-    # --------------------------------------------------
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    url = f"{base_url}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": OPENROUTER_SITE_URL,
-        "X-Title": OPENROUTER_APP_NAME,
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": os.environ.get("OPENROUTER_SITE_URL", ""),
+        "X-Title": os.environ.get("OPENROUTER_APP_NAME", ""),
         "Content-Type": "application/json"
     }
     
     payload = {
-        "model": model_id, # Use the corrected ID
+        "model": actual_model, # Pass the stripped model name
         "messages": [{"role": "user", "content": prompt_text}],
-        "response_format": {"type": "json_object"},
-        "temperature": 1.0
     }
-    
-    # v6.5.1: Enable Thinking if requested (Unified Parameter)
-    if use_thinking:
-        payload["reasoning"] = {
-            "effort": "high"
-        }
 
-    logger.info(f"Calling OpenRouter: {model_id} (orig: {model_name}) Thinking={use_thinking}")
+    if use_thinking and "openrouter" in base_url.lower():
+        payload["reasoning"] = {"effort": "high"}
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload) as resp:
+        # Bumped timeout to 1200s (20 mins) specifically to account for Nanbeige's deep thinking
+        async with session.post(url, headers=headers, json=payload, timeout=1200) as resp:
             if resp.status != 200:
                 err = await resp.text()
-                raise Exception(f"OpenRouter Error {resp.status}: {err}")
+                raise Exception(f"API Error {resp.status}: {err}")
+            
             data = await resp.json()
-            return data["choices"][0]["message"]["content"]
-
+            message = data["choices"][0]["message"]
+            text = message.get("content", "")
+            
+            # Extract reasoning to prevent it from bleeding into the final report
+            reasoning = message.get("reasoning_content", "")
+            if not reasoning and "<think>" in text:
+                think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
+                if think_match:
+                    reasoning = think_match.group(1).strip()
+                    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+            
+            # Persist Scribe's internal monologue
+            if reasoning:
+                today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                abe_root = Path(os.environ.get("ABE_ROOT", Path.home()))
+                thoughts_file = abe_root / f"logs/thoughts/scribe-{today_str}.thot"
+                thoughts_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                with open(thoughts_file, "a", encoding="utf-8") as f:
+                    ts = datetime.utcnow().isoformat()
+                    f.write(f"\n--- [SCRIBE THOUGHT BURST: {ts} | Model: {model_id}] ---\n{reasoning}\n--- [END] ---\n")
+            
+            return text
+        
 async def main():
     parser = argparse.ArgumentParser(description="Volition Scribe")
     # UPDATED DEFAULT
-    parser.add_argument("--model", default="google/gemini-3-flash-preview", help="Model to use")
+    parser.add_argument("--model", default=os.environ.get("MODEL_SCRIBE", "nanbeige-4.1-3b"), help="Model to use")
     parser.add_argument("--prompt-file", required=True, help="Path to file containing the prompt")
     parser.add_argument("--output-inbox", required=True, help="Redis list key to push results to")
     parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL, help="Redis connection URL")
@@ -183,7 +155,7 @@ async def main():
     parser.add_argument("--meta", default=None, help="JSON string of metadata to pass back to GUPPI")
     
     # Operation mode
-    parser.add_argument("--mode", default="summarize", choices=["summarize", "vectorize"], help="Operation mode")
+    parser.add_argument("--mode", default="summarize", choices=["analyze", "summarize", "vectorize"], help="Operation mode")
 
     args = parser.parse_args()
 
@@ -211,7 +183,8 @@ async def main():
 
     # 3. Execute Task
     try:
-        if args.mode == "summarize":
+        # Group analyze with summarize so the LLM actually fires
+        if args.mode in ["summarize", "analyze"]:
             # Direct generation via configured provider
             result_text = await run_llm_generation(args.model, prompt_text)
             
