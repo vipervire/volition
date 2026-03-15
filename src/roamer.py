@@ -20,6 +20,7 @@ import logging
 from typing import List, Dict, Any
 from datetime import datetime
 import shlex
+import re
 
 # Third Party
 try:
@@ -52,15 +53,23 @@ class SafeShell:
     ]
 
     FORBIDDEN_FLAGS = ["-i", "sudo", "su"]
+    
+    # Copilot's excellent catch: strict hostname validation
+    HOSTNAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+$")
 
     def __init__(self, target_host="local"):
-        self.target_host = target_host
+        if target_host != "local" and not self.HOSTNAME_PATTERN.match(str(target_host)):
+            # We don't fall back to local: Copilot's suggestion here was incredibly dumb in PR review lol.
+            logger.error(f"FATAL: Invalid target_host '{target_host}'.")
+            self.target_host = "INVALID_HOST"
+        else:
+            self.target_host = target_host
 
     def validate(self, cmd: str) -> (bool, str):
         if not isinstance(cmd, str) or not cmd.strip():
             return False, "Empty command."
             
-        # Allow the pipe '|', but block chaining, subshells, and redirection, we'll check the piped commands separately.
+        # We ALLOW the pipe '|', but block chaining, subshells, and redirection
         forbidden_chars = ['&', ';', '$', '`', '<', '>', '\n']
         if any(c in cmd for c in forbidden_chars):
             return False, "Chaining (; &), subshells ($ `), and redirects (> <) are blocked."
@@ -72,7 +81,6 @@ class SafeShell:
             if not segment:
                 return False, "Empty pipe segment detected."
             
-            # Use shlex to safely tokenize the segment
             try:
                 tokens = shlex.split(segment)
             except ValueError as e:
@@ -91,44 +99,61 @@ class SafeShell:
         return True, ""
 
     def execute(self, cmd: str) -> str:
+        if self.target_host == "INVALID_HOST":
+            return "SAFETY BLOCK: Invalid target_host provided. Aborting to prevent local execution."
+
         is_safe, reason = self.validate(cmd)
         if not is_safe:
             return f"SAFETY BLOCK: {reason}"
 
         if self.target_host != "local":
-            # Simple escape: replace " with \" and wrap in quotes for SSH
-            safe_cmd = cmd.replace('"', '\\"')
-            final_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 {self.target_host} \"{safe_cmd}\""
+            safe_cmd = shlex.quote(cmd)
+            final_cmd = [
+                "ssh", 
+                "-o", "StrictHostKeyChecking=no", 
+                "-o", "ConnectTimeout=5", 
+                self.target_host, 
+                safe_cmd
+            ]
+            logger.info(f"EXEC REMOTE: {' '.join(final_cmd)}")
+            
+            try:
+                # shell=False. Safe array passing for SSH.
+                result = subprocess.run(
+                    final_cmd, 
+                    shell=False, 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=15
+                )
+                stdout = result.stdout
+                stderr = result.stderr
+            except Exception as e:
+                return f"ERROR: SSH Execution failed: {e}"
         else:
-            final_cmd = cmd
+            logger.info(f"EXEC LOCAL: {cmd}")
+            try:
+                # We proved every piped segment is safe via validate(). We can use shell=True locally.
+                result = subprocess.run(
+                    cmd, 
+                    shell=True, 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=15
+                )
+                stdout = result.stdout
+                stderr = result.stderr
+            except Exception as e:
+                return f"ERROR: Local Execution failed: {e}"
 
-        logger.info(f"EXEC: {final_cmd}")
-
-        try:
-            # We can safely use shell=True now because we proved every piped command is whitelisted -- well, sort of.
-            result = subprocess.run(
-                final_cmd, 
-                shell=True, 
-                capture_output=True, 
-                text=True, 
-                timeout=15
-            )
-            stdout = result.stdout
-            stderr = result.stderr
+        if len(stdout) > 4000:
+            stdout = stdout[:4000] + "\n... [TRUNCATED: Output exceeded 4000 chars] ..."
             
-            if len(stdout) > 4000:
-                stdout = stdout[:4000] + "\n... [TRUNCATED: Output exceeded 4000 chars] ..."
-            
-            output = ""
-            if stdout: output += f"STDOUT:\n{stdout}"
-            if stderr: output += f"\nSTDERR:\n{stderr}"
-            return output or "(No Output)"
-
-        except subprocess.TimeoutExpired:
-            return "ERROR: Command timed out (15s limit)."
-        except Exception as e:
-            return f"ERROR: Execution failed: {e}"
-        
+        output = ""
+        if stdout: output += f"STDOUT:\n{stdout}"
+        if stderr: output += f"\nSTDERR:\n{stderr}"
+        return output or "(No Output)"
+    
 # --- THE INVESTIGATOR AGENT ---
 class RoamerAgent:
     def __init__(self, directive, target_host, output_inbox, debug_mode=False, api_url=None, model=None):
