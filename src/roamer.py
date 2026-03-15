@@ -105,10 +105,9 @@ class SafeShell:
         try:
             if self.target_host != "local":
                 # SSH as an array (shell=False) to prevent host injection
-                safe_cmd = shlex.quote(cmd)
                 final_cmd = [
-                    "ssh", "-o", "StrictHostKeyChecking=no", 
-                    "-o", "ConnectTimeout=5", self.target_host, safe_cmd
+                    "ssh", "-o", "StrictHostKeyChecking=no",
+                    "-o", "ConnectTimeout=5", self.target_host, cmd
                 ]
                 logger.info(f"EXEC REMOTE: {' '.join(final_cmd)}")
                 result = subprocess.run(final_cmd, shell=False, capture_output=True, text=True, timeout=15)
