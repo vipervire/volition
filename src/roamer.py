@@ -202,7 +202,7 @@ PROTOCOL:
                             }
                         } for tc in msg.tool_calls
                     ]
-                self.history.append(msg)
+                self.history.append(assistant_entry)
             except Exception as e:
                 self._report_failure(f"LLM API Failure: {e}")
                 return
