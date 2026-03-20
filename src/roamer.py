@@ -31,11 +31,14 @@ except ImportError:
     sys.exit(1)
 
 # --- CONFIGURATION ---
-# Default to local vLLM/Ollama/LlamaCpp
-DEFAULT_API_URL = os.environ.get("ROAMER_API_URL", "") 
-DEFAULT_API_KEY = os.environ.get("ROAMER_API_KEY", "volition-local")
-DEFAULT_MODEL = os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder")
+OPENROUTER_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "https://volition.indoria.org")
+OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
 
+LOCAL_API_URL = os.environ.get("ROAMER_API_URL", "http://127.0.0.1:8080/v1")
+LOCAL_API_KEY = "sk-local-llama"
+
+DEFAULT_MODEL = os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder")
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "")
 MAX_TURNS = 15
 
@@ -146,13 +149,27 @@ class RoamerAgent:
         self.shell = SafeShell(target_host)
         self.output_inbox = output_inbox
         self.debug_mode = debug_mode
-        # Standardize the model string
+
+        # Split-Brain Routing (Local vs Remote) — mirrors guppi.py / scribe.py
         raw_model = model or DEFAULT_MODEL
-        self.model = raw_model.replace("local/", "") if raw_model.startswith("local/") else raw_model
-        
-        
-        url = api_url or DEFAULT_API_URL
-        self.client = OpenAI(base_url=url, api_key=DEFAULT_API_KEY)
+        if raw_model.startswith("local/"):
+            self.model = raw_model.replace("local/", "")
+            url = (api_url or LOCAL_API_URL).rstrip("/")
+            api_key = LOCAL_API_KEY
+            extra_headers = {}
+        else:
+            self.model = raw_model
+            url = (api_url or OPENROUTER_BASE_URL).rstrip("/")
+            api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+            if not api_key:
+                logger.error("FATAL: No remote API key configured (OPENAI_API_KEY or OPENROUTER_API_KEY).")
+                sys.exit(1)
+            extra_headers = {
+                "HTTP-Referer": OPENROUTER_SITE_URL,
+                "X-Title": OPENROUTER_APP_NAME,
+            }
+
+        self.client = OpenAI(base_url=url, api_key=api_key, default_headers=extra_headers)
         
         self.history = [
             {"role": "system", "content": self._build_system_prompt(target_host)}

@@ -1792,7 +1792,8 @@ You were asleep for: {time_str}
                         sys.executable, str(BIN_DIR / "roamer.py"),
                         "--directive", directive,
                         "--target-host", target_host,
-                        "--output-inbox", f"inbox:{self.abe_name}"
+                        "--output-inbox", f"inbox:{self.abe_name}",
+                        "--model", os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder"),
                     ]
                     # Spawn untracked so GUPPI isn't blocked waiting for the investigation
                     await self._spawn_subprocess_exec(turn_id, cmd, tracked=False)
