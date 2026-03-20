@@ -1614,6 +1614,14 @@ class GuppiDaemon:
             clean_json = match.group(0) if match else text_response
             parsed = json.loads(clean_json)
 
+            # Guard: LLM sometimes returns a JSON array instead of an object
+            if isinstance(parsed, list):
+                dicts = [item for item in parsed if isinstance(item, dict)]
+                if dicts:
+                    parsed = dicts[0]
+                else:
+                    raise LLMOutputError("LLM returned a JSON array with no dict elements.")
+
             # Active Decontamination
             keys_to_scrub = ["thought_signature", "thoughtSignature"]
             for k in keys_to_scrub:
