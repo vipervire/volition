@@ -389,7 +389,7 @@ if __name__ == "__main__":
     parser.add_argument("--output-inbox", default="inbox:debug", help="Redis inbox to push results to")
     
     # Configuration Overrides
-    parser.add_argument("--api-url", default=DEFAULT_API_URL, help="OpenAI-compatible API URL")
+    parser.add_argument("--api-url", default=None, help="OpenAI-compatible API URL")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Model name")
     parser.add_argument("--debug", action="store_true", help="Print results to console instead of Redis")
 
