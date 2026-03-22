@@ -47,6 +47,12 @@ echo ">> Request: Spawn $CHILD_NAME from Parent $PARENT_NAME"
 PARENT_ID=$(sudo pct list | grep "$PARENT_NAME" | awk '{print $1}' | head -n 1)
 if [[ -z "$PARENT_ID" ]]; then echo "Error: Parent '$PARENT_NAME' not found."; exit 1; fi
 
+# Inherit bridge and storage from parent container
+PARENT_STORAGE=$(sudo pct config "$PARENT_ID" | grep '^rootfs:' | sed 's/rootfs: *\([^:]*\):.*/\1/')
+PARENT_BRIDGE=$(sudo pct config "$PARENT_ID" | grep '^net0:' | sed 's/.*bridge=\([^,]*\).*/\1/')
+if [[ -n "$PARENT_STORAGE" ]]; then STORAGE="$PARENT_STORAGE"; fi
+if [[ -n "$PARENT_BRIDGE" ]]; then BRIDGE="$PARENT_BRIDGE"; fi
+
 NEXT_ID=$(sudo pct list | awk '$1 > 9000 {print $1}' | sort -nr | head -n1)
 if [[ -z "$NEXT_ID" ]]; then NEXT_ID=9001; else NEXT_ID=$((NEXT_ID + 1)); fi
 
