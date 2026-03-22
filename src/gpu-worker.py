@@ -54,7 +54,7 @@ OPENROUTER_MODEL_SUMMARIZE = os.environ.get(
 
 CONTEXT_LIMITS = {
     "google/gemini-embedding-001": 8_192,
-    "google/gemini-3-flash-preview": 1_000_000,
+    "google/gemini-3-flash-preview": 1_048_576,
     "mistral": 32_768,
     "nomic-embed-text": 8_192,
 }
@@ -63,6 +63,8 @@ OPENROUTER_MODEL_EMBED = os.environ.get(
     "OPENROUTER_MODEL_EMBED",
     "google/gemini-embedding-001"
 )
+OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "https://volition.indoria.org")
+OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
 
 
 # Logging
@@ -133,14 +135,17 @@ async def run_embedding_openrouter(session: aiohttp.ClientSession, text: str, r:
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": OPENROUTER_SITE_URL,
+        "X-Title": OPENROUTER_APP_NAME,
     }
 
     try:
         async with session.post(
             "https://openrouter.ai/api/v1/embeddings",
             headers=headers,
-            json=payload
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=120)
         ) as resp:
             if resp.status != 200:
                 err = await resp.text()
@@ -166,7 +171,11 @@ async def run_embedding_openrouter(session: aiohttp.ClientSession, text: str, r:
                     })
                 except Exception:
                     pass
-            return data["data"][0]["embedding"]
+            embedding_data = data.get("data")
+            if not embedding_data:
+                logger.error("OpenRouter returned empty embedding data")
+                return None
+            return embedding_data[0]["embedding"]
 
     except Exception as e:
         logger.error(f"OpenRouter embedding exception: {e}")
@@ -187,14 +196,17 @@ async def run_summary_openrouter(session: aiohttp.ClientSession, text: str, r: r
     }
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": OPENROUTER_SITE_URL,
+        "X-Title": OPENROUTER_APP_NAME,
     }
 
     try:
         async with session.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
-            json=payload
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=120)
         ) as resp:
             if resp.status != 200:
                 err = await resp.text()
@@ -220,7 +232,11 @@ async def run_summary_openrouter(session: aiohttp.ClientSession, text: str, r: r
                     })
                 except Exception:
                     pass
-            return data["choices"][0]["message"]["content"]
+            choices = data.get("choices")
+            if not choices:
+                logger.error("OpenRouter returned empty choices")
+                return None
+            return choices[0]["message"]["content"]
 
     except Exception as e:
         logger.error(f"OpenRouter summary exception: {e}")

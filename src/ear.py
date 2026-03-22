@@ -44,6 +44,8 @@ OPENROUTER_MODEL_SUMMARIZE = os.environ.get(
     "OPENROUTER_MODEL_SUMMARIZE",
     "google/gemini-3-flash-preview"
 )
+OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "https://volition.indoria.org")
+OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
 
 
 # Tuning
@@ -164,14 +166,17 @@ class SocialRouter:
 
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": OPENROUTER_SITE_URL,
+            "X-Title": OPENROUTER_APP_NAME,
         }
 
         try:
             async with session.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
-                json=payload
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120)
             ) as resp:
                 if resp.status != 200:
                     err = await resp.text()
@@ -197,7 +202,11 @@ class SocialRouter:
                         })
                     except Exception:
                         pass
-                return data["choices"][0]["message"]["content"]
+                choices = data.get("choices")
+                if not choices:
+                    logger.error("OpenRouter returned empty choices")
+                    return None
+                return choices[0]["message"]["content"]
 
         except Exception as e:
             logger.error(f"OpenRouter summarize exception: {e}")
