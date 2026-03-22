@@ -897,7 +897,7 @@ echo "[*] Updating Apt..."
 apt-get update -qq
 
 echo "[*] Installing Dependencies..."
-apt-get install -y -qq locales python3-full python3-pip python3-venv git redis-tools curl nano
+apt-get install -y -qq locales python3-full python3-pip python3-venv python3-redis git redis-tools curl nano
 
 echo "[*] Configuring Locale..."
 sed -i 's/^# *{host_lang}/{host_lang}/' /etc/locale.gen
@@ -914,7 +914,7 @@ fi
 echo "[*] Installing Python Libs..."
 /root/venv/bin/pip install --upgrade pip
 # Core Volition Requirements
-/root/venv/bin/pip install aiosqlite redis asyncssh aiohttp requests chromadb google-genai trafilatura
+/root/venv/bin/pip install aiosqlite redis asyncssh aiohttp requests chromadb google-genai trafilatura openai
 
 echo "[*] Enabling Service..."
 systemctl daemon-reload
