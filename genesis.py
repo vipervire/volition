@@ -400,7 +400,7 @@ Environment=MODEL_SUMMARIZE=mistral
 Environment=OPENROUTER_API_KEY={openrouter_api_key}
 Environment=OPENROUTER_MODEL_EMBED=google/gemini-embedding-001
 
-ExecStart=/opt/volition/venv/bin/python /opt/volition/gpu_worker.py
+ExecStart=/opt/volition/venv/bin/python /opt/volition/gpu-worker.py
 Restart=always
 RestartSec=3
 

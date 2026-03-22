@@ -12,7 +12,7 @@ Purpose:
 Usage:
   export REDIS_HOST=10.0.0.175
   export OLLAMA_URL=http://localhost:11434
-  python3 gpu_worker.py
+  python3 gpu-worker.py
 """
 
 import asyncio

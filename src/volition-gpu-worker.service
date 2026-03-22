@@ -21,8 +21,8 @@ Environment=OPENROUTER_API_KEY= sk-xxxxxxxx # Set this if using openrouter
 Environment=OPENROUTER_MODEL_EMBED=google/gemini-embedding-001 # Set this if using openrouter
 
 # Python
-#ExecStart=/usr/bin/python3 /opt/volition/gpu_worker.py
-ExecStart=/opt/volition/venv/bin/python /opt/volition/gpu_worker.py
+#ExecStart=/usr/bin/python3 /opt/volition/gpu-worker.py
+ExecStart=/opt/volition/venv/bin/python /opt/volition/gpu-worker.py
 # Restart behavior
 Restart=always
 RestartSec=3
