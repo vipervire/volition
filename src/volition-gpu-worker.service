@@ -17,8 +17,10 @@ Environment=MODEL_EMBED=nomic-embed-text
 Environment=MODEL_SUMMARIZE=mistral
 
 Environment=EMBEDDING_BACKEND=ollama # IF YOU DO NOT HAVE OLLAMA, SET THIS TO openrouter
+Environment=SUMMARIZE_BACKEND=ollama # IF YOU DO NOT HAVE OLLAMA, SET THIS TO openrouter
 Environment=OPENROUTER_API_KEY= sk-xxxxxxxx # Set this if using openrouter
 Environment=OPENROUTER_MODEL_EMBED=google/gemini-embedding-001 # Set this if using openrouter
+Environment=OPENROUTER_MODEL_SUMMARIZE=google/gemini-3-flash-preview # Set this if using openrouter
 
 # Python
 #ExecStart=/usr/bin/python3 /opt/volition/gpu-worker.py

@@ -280,10 +280,16 @@ OPENROUTER_API_KEY={openrouter_api_key}
 
 # --- Model Routing (Split-Brain) ---
 # Flash: Social, Low-Risk (Chat)
-OPENROUTER_MODEL_FLASH=google/gemini-3-flash-preview
+MODEL_FLASH=google/gemini-3-flash-preview
 # Pro: Work, High-Agency (Inbox/Tasks) - Using Thinking Model for complex tasks
 # If Gemini-3-flash-preview is listed here, it will have thinking:high set in guppi for Pro.
-OPENROUTER_MODEL_PRO=google/gemini-3-flash-preview
+MODEL_PRO=google/gemini-3-flash-preview
+
+# --- Specialist Models (uncomment to override defaults) ---
+# MODEL_SUMMARIZE=local/mistral
+# MODEL_ROAMER=qwen-2.5-14b-coder
+# MODEL_SCRIBE=local/nanbeige-4.1-3B
+# GEMINI_MODEL=gemini-3-flash-preview
 
 # --- Metadata (for OpenRouter Leaderboard) ---
 OPENROUTER_SITE_URL=https://volition.indoria.org
