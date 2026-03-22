@@ -2252,8 +2252,27 @@ You were asleep for: {time_str}
     async def _handle_spawn_abe(self, turn_id, action):
         host = action.get("host")
         script = action.get("spawn_script", "spawn_abe_lxc.sh")
-        # Simplified for brevity, assumes script exists on host
-        asyncio.create_task(self._run_remote_ssh(turn_id, host, f"bash {script}"))
+        identity = action.get("identity", {})
+        genesis_note = action.get("genesis_note", "")
+
+        identity_path = f"/tmp/.abe-spawn-identity-{turn_id}.json"
+        genesis_path = f"/tmp/.abe-spawn-genesis-{turn_id}.md"
+
+        async def _do_spawn():
+            try:
+                async with asyncssh.connect(host) as conn:
+                    async with conn.start_sftp_client() as sftp:
+                        async with sftp.open(identity_path, 'w') as f:
+                            await f.write(json.dumps(identity))
+                        async with sftp.open(genesis_path, 'w') as f:
+                            await f.write(genesis_note)
+                    cmd = f"bash {script} --identity-file {identity_path} --genesis-file {genesis_path}"
+                    res = await asyncio.wait_for(conn.run(cmd), timeout=SSH_CMD_TIMEOUT)
+                    await self.patch_abe_outcome(turn_id, {"stdout": res.stdout, "stderr": res.stderr})
+            except Exception as e:
+                await self.patch_abe_outcome(turn_id, {"error": str(e)})
+
+        asyncio.create_task(_do_spawn())
 
     async def _query_vector_db(self, query: str):
         # Local mock or implementation of vector search
