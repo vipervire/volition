@@ -53,7 +53,7 @@ PARENT_BRIDGE=$(sudo pct config "$PARENT_ID" | grep '^net0:' | sed 's/.*bridge=\
 if [[ -n "$PARENT_STORAGE" ]]; then STORAGE="$PARENT_STORAGE"; fi
 if [[ -n "$PARENT_BRIDGE" ]]; then BRIDGE="$PARENT_BRIDGE"; fi
 
-NEXT_ID=$(sudo pct list | awk '$1 > 9000 {print $1}' | sort -nr | head -n1)
+NEXT_ID=$(sudo pct list | awk 'NR>1 && $1 > 9000 {print $1}' | sort -nr | head -n1)
 if [[ -z "$NEXT_ID" ]]; then NEXT_ID=9001; else NEXT_ID=$((NEXT_ID + 1)); fi
 
 echo ">> Parent ID: $PARENT_ID -> Child ID: $NEXT_ID"
