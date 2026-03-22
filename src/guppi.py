@@ -2251,7 +2251,7 @@ You were asleep for: {time_str}
     
     async def _handle_spawn_abe(self, turn_id, action):
         host = action.get("host")
-        script = action.get("spawn_script", "spawn_abe_lxc.sh")
+        script = action.get("spawn_script", "/root/bin/spawn_abe_lxc.sh")
         identity = action.get("identity", {})
         genesis_note = action.get("genesis_note", "")
 
