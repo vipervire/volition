@@ -1989,7 +1989,7 @@ You were asleep for: {time_str}
                 lock_key = f"lock:{channel}"
                 acquired = await self.r.set(lock_key, self.abe_name, nx=True, px=DEFAULT_LOCK_TTL_MS)
                 if acquired:
-                    entry = {"from": self.abe_name, "content": "I am speaking.", "type": "grab_stick"}
+                    entry = {"from": self.abe_name, "content": "I am speaking.", "type": "grab_stick", "timestamp": datetime.utcnow().isoformat()}
                     await retry_async(self.r.xadd, channel, entry)
                     result = {"status": "granted", "channel": channel, "note": f"You hold the stick for {DEFAULT_LOCK_TTL_MS/1000}s"}
                 else:
