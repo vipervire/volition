@@ -47,7 +47,7 @@ echo ">> Request: Spawn $CHILD_NAME from Parent $PARENT_NAME"
 PARENT_ID=$(sudo pct list | grep "$PARENT_NAME" | awk '{print $1}' | head -n 1)
 if [[ -z "$PARENT_ID" ]]; then echo "Error: Parent '$PARENT_NAME' not found."; exit 1; fi
 
-NEXT_ID=$(sudo pct list | awk '$1 > 9000 {print $1}' | sort -nr | head -n1)
+NEXT_ID=$(sudo pct list | awk 'NR>1 && $1 > 9000 {print $1}' | sort -nr | head -n1)
 if [[ -z "$NEXT_ID" ]]; then NEXT_ID=9001; else NEXT_ID=$((NEXT_ID + 1)); fi
 
 echo ">> Parent ID: $PARENT_ID -> Child ID: $NEXT_ID"
