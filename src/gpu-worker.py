@@ -46,8 +46,15 @@ MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "mistral")
 EMBEDDING_BACKEND = os.environ.get("EMBEDDING_BACKEND", "ollama").lower()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
+SUMMARIZE_BACKEND = os.environ.get("SUMMARIZE_BACKEND", "ollama").lower()
+OPENROUTER_MODEL_SUMMARIZE = os.environ.get(
+    "OPENROUTER_MODEL_SUMMARIZE",
+    "google/gemini-3-flash-preview"
+)
+
 CONTEXT_LIMITS = {
     "google/gemini-embedding-001": 8_192,
+    "google/gemini-3-flash-preview": 1_000_000,
     "mistral": 32_768,
     "nomic-embed-text": 8_192,
 }
@@ -166,6 +173,60 @@ async def run_embedding_openrouter(session: aiohttp.ClientSession, text: str, r:
         return None
 
 
+async def run_summary_openrouter(session: aiohttp.ClientSession, text: str, r: redis.Redis = None) -> Optional[str]:
+    """Calls OpenRouter to generate a summary via chat completions."""
+    if not OPENROUTER_API_KEY:
+        logger.error("OPENROUTER_API_KEY not set for openrouter summarization")
+        return None
+
+    prompt = f"Summarize the following text concisely, focusing on key events and technical details:\n\n{text}"
+    payload = {
+        "model": OPENROUTER_MODEL_SUMMARIZE,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        async with session.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload
+        ) as resp:
+            if resp.status != 200:
+                err = await resp.text()
+                logger.error(f"OpenRouter summary failed ({resp.status}): {err}")
+                return None
+
+            data = await resp.json()
+            usage = data.get("usage", {})
+            if usage and r:
+                try:
+                    ctx_limit = CONTEXT_LIMITS.get(OPENROUTER_MODEL_SUMMARIZE, DEFAULT_CONTEXT_LIMIT)
+                    total = usage.get("total_tokens", 0) or 0
+                    await r.xadd("volition:token_usage", {
+                        "source": "gpu-worker",
+                        "agent": "gpu-worker",
+                        "model": OPENROUTER_MODEL_SUMMARIZE,
+                        "prompt_tokens": str(usage.get("prompt_tokens", 0) or 0),
+                        "completion_tokens": str(usage.get("completion_tokens", 0) or 0),
+                        "total_tokens": str(total),
+                        "context_limit": str(ctx_limit),
+                        "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
+                        "ts": datetime.utcnow().isoformat()
+                    })
+                except Exception:
+                    pass
+            return data["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        logger.error(f"OpenRouter summary exception: {e}")
+        return None
+
+
 async def run_summary(session: aiohttp.ClientSession, text: str, r: redis.Redis = None) -> Optional[str]:
     """Calls Ollama to generate a summary."""
     # Context window management is up to the model, but we keep the prompt simple.
@@ -227,6 +288,7 @@ async def process_task(r: redis.Redis, session: aiohttp.ClientSession, raw_task:
 
     result_data = None
     error_msg = None
+    backend_name = MODEL_SUMMARIZE  # default; overwritten per branch below
 
     # --- Router ---
     # v6.4 FIX: Check for empty/whitespace content to prevent 400 errors
@@ -246,23 +308,24 @@ async def process_task(r: redis.Redis, session: aiohttp.ClientSession, raw_task:
             else:
                 error_msg = f"Embedding generation failed ({EMBEDDING_BACKEND})"
 
-
         elif task_type == "summarize":
-            summary = await run_summary(session, content, r=r)
+            if SUMMARIZE_BACKEND == "openrouter":
+                summary = await run_summary_openrouter(session, content, r=r)
+                backend_name = OPENROUTER_MODEL_SUMMARIZE
+            else:
+                summary = await run_summary(session, content, r=r)
+                backend_name = MODEL_SUMMARIZE
+
             if summary:
                 result_data = {"summary": summary}
             else:
-                error_msg = "Ollama summary generation failed"
+                error_msg = f"Summary generation failed ({SUMMARIZE_BACKEND})"
 
         else:
             error_msg = f"Unknown task type: {task_type}"
 
 
-    model_meta = (
-            backend_name
-            if task_type == "embed"
-            else MODEL_SUMMARIZE
-        )
+    model_meta = backend_name
     # --- Reply ---
     if reply_to:
         response_payload = {

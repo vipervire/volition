@@ -392,6 +392,7 @@ Environment=REDIS_PASSWORD={redis_pass}
 
 # Default: Ollama local
 Environment=EMBEDDING_BACKEND=ollama
+Environment=SUMMARIZE_BACKEND=ollama
 Environment=OLLAMA_URL=http://localhost:11434/api
 Environment=MODEL_EMBED=nomic-embed-text
 Environment=MODEL_SUMMARIZE=mistral
@@ -399,6 +400,7 @@ Environment=MODEL_SUMMARIZE=mistral
 # Optional OpenRouter fallback
 Environment=OPENROUTER_API_KEY={openrouter_api_key}
 Environment=OPENROUTER_MODEL_EMBED=google/gemini-embedding-001
+Environment=OPENROUTER_MODEL_SUMMARIZE=google/gemini-3-flash-preview
 
 ExecStart=/opt/volition/venv/bin/python /opt/volition/gpu-worker.py
 Restart=always
