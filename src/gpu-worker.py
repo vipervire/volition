@@ -57,6 +57,8 @@ CONTEXT_LIMITS = {
     "google/gemini-3-flash-preview": 1_048_576,
     "mistral": 32_768,
     "nomic-embed-text": 8_192,
+    "minimax/minimax-m2.5:free": 196_608,
+    "stepfun/step-3.5-flash:free": 256_000,
 }
 DEFAULT_CONTEXT_LIMIT = 32_768
 OPENROUTER_MODEL_EMBED = os.environ.get(

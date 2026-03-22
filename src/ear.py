@@ -61,6 +61,8 @@ CONTEXT_LIMITS = {
     "google/gemini-3-flash-preview": 1_048_576,
     "google/gemini-2.5-flash-preview": 1_048_576,
     "mistral": 32_768,
+    "minimax/minimax-m2.5:free": 196_608,
+    "stepfun/step-3.5-flash:free": 256_000,
 }
 DEFAULT_CONTEXT_LIMIT = 32_768
 

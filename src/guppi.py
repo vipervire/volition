@@ -116,6 +116,8 @@ CONTEXT_LIMITS = {
     "qwen-2.5-14b-coder": 32_768,
     "nanbeige-4.1-3b": 8_192,
     "nomic-embed-text": 8_192,
+    "minimax/minimax-m2.5:free": 196_608,
+    "stepfun/step-3.5-flash:free": 256_000,
 }
 DEFAULT_CONTEXT_LIMIT = 32_768
 FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
