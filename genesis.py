@@ -776,6 +776,7 @@ BRIDGE="{bridge_id}"
         # Since the original script has `STORAGE="local"`, we try to replace that line.
         if 'STORAGE="local"' in script_content:
              script_content = script_content.replace('STORAGE="local"', f'STORAGE="{storage_id}"')
+             script_content = script_content.replace('BRIDGE="vmbr0"', f'BRIDGE="{bridge_id}"')
         else:
              # Just prepend if we can't find the exact line
              script_content = config_block + script_content
