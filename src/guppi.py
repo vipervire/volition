@@ -2253,6 +2253,7 @@ You were asleep for: {time_str}
         host = action.get("host")
         script = action.get("spawn_script", "/root/bin/spawn_abe_lxc.sh")
         identity = action.get("identity", {})
+        identity["parent"] = self.abe_name
         genesis_note = action.get("genesis_note", "")
 
         identity_path = f"/tmp/.abe-spawn-identity-{turn_id}.json"
