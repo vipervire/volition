@@ -796,7 +796,19 @@ BRIDGE="{bridge_id}"
         
         os.chmod(target_path, 0o755)
         print(f"{GREEN}Installed and Configured spawn_abe_lxc.sh to {target_path}{RESET}")
-      
+
+    advisor_src = SRC_DIR / "spawn_advisor.sh"
+
+    if advisor_src.exists():
+        script_content = advisor_src.read_text()
+        if 'STORAGE="local"' in script_content:
+            script_content = script_content.replace('STORAGE="local"', f'STORAGE="{storage_id}"')
+        target_path = HOST_BIN_DIR / "spawn_advisor.sh"
+        with open(target_path, "w") as f:
+            f.write(script_content)
+        os.chmod(target_path, 0o755)
+        print(f"{GREEN}Installed and Configured spawn_advisor.sh to {target_path}{RESET}")
+
      # --- 5. SSH CONFIGURATION ---
     print(f"\n{CYAN}--- PHASE 5: THE UMBILICAL CORD (SSH) ---{RESET}")
     print("Generating SSH identity for Abe-01...")
