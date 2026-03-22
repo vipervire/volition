@@ -21,6 +21,7 @@ import time
 import shutil
 import getpass
 import socket
+import locale
 from pathlib import Path
 
 # --- COLORS ---
@@ -882,8 +883,11 @@ Host parent_node {host_hostname}
 
     # --- 5. BOOTSTRAP ---
     print(f"\n{CYAN}--- PHASE 5: AWAKENING (Bootstrap) ---{RESET}")
-    
-    bootstrap_script = """#!/bin/bash
+
+    _host_locale = locale.getlocale()[0]
+    host_lang = f"{_host_locale}.UTF-8" if _host_locale else "en_US.UTF-8"
+
+    bootstrap_script = f"""#!/bin/bash
 set -e
 export LANG=C
 export LC_ALL=C
@@ -893,7 +897,14 @@ echo "[*] Updating Apt..."
 apt-get update -qq
 
 echo "[*] Installing Dependencies..."
-apt-get install -y -qq python3-full python3-pip python3-venv git redis-tools curl nano
+apt-get install -y -qq locales python3-full python3-pip python3-venv git redis-tools curl nano
+
+echo "[*] Configuring Locale..."
+sed -i 's/^# *{host_lang}/{host_lang}/' /etc/locale.gen
+locale-gen {host_lang}
+update-locale LANG={host_lang} LC_ALL={host_lang}
+export LANG={host_lang}
+export LC_ALL={host_lang}
 
 echo "[*] Creating Venv..."
 if [ ! -d "/root/venv" ]; then
