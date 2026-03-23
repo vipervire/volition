@@ -1575,7 +1575,6 @@ class GuppiDaemon:
             "response_format": {"type": "json_object"},
             "temperature": target_temp,
             "top_p": target_top_p,
-            "top_k": target_top_k
         }
 
         # 3. Route the Thinking Mechanism
@@ -1584,7 +1583,7 @@ class GuppiDaemon:
             payload["reasoning"] = {"effort": "high"}
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=1200) as resp:
+            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
                 if resp.status != 200:
                     err = await resp.text()
                     logger.error(f"OpenAI-Compat Error {resp.status}: {err}")
