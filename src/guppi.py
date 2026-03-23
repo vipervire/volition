@@ -2057,7 +2057,8 @@ You were asleep for: {time_str}
         # Chat, Email, and Shell MUST notify on success.
         quiet_tools = {
             "snooze_task",
-            "hibernate" 
+            "hibernate",
+            "chat_grab_stick"
         }
         
         should_notify = True
