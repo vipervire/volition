@@ -21,6 +21,10 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from tool_registry import ToolRegistry
+from tools_builtin import register_all as _register_builtin_tools
+from mcp_client import MCPManager, load_mcp_config
+from skills import SkillManager
 
 # Third-party libraries
 import aiosqlite
@@ -120,7 +124,6 @@ CONTEXT_LIMITS = {
     "stepfun/step-3.5-flash:free": 256_000,
 }
 DEFAULT_CONTEXT_LIMIT = 32_768
-FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
 
 # Logging Setup
 logging.basicConfig(
@@ -280,10 +283,21 @@ class GuppiDaemon:
         self._local_wakeup = asyncio.Event() 
         self.cooldown_until = 0.0
 
+        # Tool Registry (v8.0+)
+        self.registry = ToolRegistry()
+        _register_builtin_tools(self.registry, self)
+
+        # MCP Client (v8.0+)
+        self.mcp = MCPManager(self.registry, self.r, self.abe_name)
+        self._mcp_config_file = ABE_ROOT / ".abe-mcp.json"
+
+        # Skills (v8.0+)
+        self.skills = SkillManager(self.registry, self.mcp, ABE_ROOT, self.abe_name)
+
         self._init_fs()
         self._init_db_sync()
         self._load_log_buffer()
-        self._perform_crash_recovery() 
+        self._perform_crash_recovery()
         
         # Orientation State
         self.last_sleep_ts = time.time()
@@ -1214,6 +1228,12 @@ class GuppiDaemon:
         
         # 1. RESTORED: Start Heartbeat
         self._bg_tasks.append(asyncio.create_task(self.heartbeat_loop()))
+
+        # 2. Load MCP servers from config (v8.0+)
+        await load_mcp_config(self.mcp, self._mcp_config_file)
+
+        # 3. Restore previously active skills (v8.0+)
+        await self.skills.restore_from_persistence(daemon=self)
         
         def safe_result(t):
             try: return t.result()
@@ -1467,7 +1487,7 @@ class GuppiDaemon:
             tool = action.get("tool")
 
             # Implicit Escalation
-            if is_flash and tool in FLASH_FORBIDDEN_TOOLS:
+            if is_flash and self.registry.is_flash_forbidden(tool):
                 logger.warning(f"ESCALATION: Flash attempted {tool}. Waking Pro.")
                 await self.log_guppi_event("EscalationTrigger", f"Denied Flash tool: {tool}")
 
@@ -1738,6 +1758,13 @@ You were asleep for: {time_str}
         clipboard_content = self.clipboard.read()
         clipboard_block = f"\n[ACTIVE_CLIPBOARD]\n(Persistent scratchpad. Use GUPPI tool 'manage_clipboard' to edit)\n{clipboard_content}\n"
 
+        # [NEW] 8.0: Skills context injection
+        skills_block = ""
+        if self.skills.loaded_skills:
+            skills_context = self.skills.get_context_blocks()
+            if skills_context:
+                skills_block = f"\n[ACTIVE_SKILLS]\n{skills_context}\n"
+
         # Assemble Prompt
         return f"""
 {genesis}
@@ -1745,11 +1772,12 @@ You were asleep for: {time_str}
 {protocol_block}
 [IDENTITY_PASSPORT]
 {json.dumps(self.identity, indent=2)}
-[TODAY'S CHANGELOG (Latest Entries)] 
+[TODAY'S CHANGELOG (Latest Entries)]
 {daily_log}
 [TIER_2_MEMORY_EPISODES]
 {summaries}
 {clipboard_block}
+{skills_block}
 {orientation_block}
 {recent_log_block}
 [CURRENTLY_DUE_TASKS]
@@ -1762,341 +1790,34 @@ You were asleep for: {time_str}
     # --- ACTIONS (Standard v7.2.3 Toolset) ---
 
     async def execute_action(self, turn_id, action):
-        tool = action.get("tool")
-        logger.info(f"Executing Tool: {tool}")
-        result = {"status": "success"}
+        tool_name = action.get("tool")
+        logger.info(f"Executing Tool: {tool_name}")
+
+        tool_def = self.registry.get(tool_name)
+        if not tool_def:
+            result = {"status": "error", "message": f"Unknown tool: {tool_name}"}
+            await self.patch_abe_outcome(turn_id, result)
+            return
 
         try:
-            if tool == "help":
-                result = self._tool_help(action.get("tool_name"))
-            
-            # [NEW] 7.8: Clipboard Tool
-            elif tool == "manage_clipboard":
-                sub = action.get("action", "read")
-                if sub == "read": 
-                    result = {"status": "success", "content": self.clipboard.read()}
-                elif sub == "add":
-                    result = {"status": "success", "message": self.clipboard.add(action.get("content", ""))}
-                elif sub == "remove":
-                    idx = action.get("index") or action.get("indices")
-                    if idx:
-                        if isinstance(idx, (str, int)): idx = [int(idx)]
-                        result = {"status": "success", "message": self.clipboard.remove(idx)}
-                    else:
-                        result = {"status": "error", "message": "Missing index"}
-                elif sub == "clear":
-                    result = {"status": "success", "message": self.clipboard.clear()}
-
-            elif tool == "shell":
-                cmd = action.get("command")
-                await self._spawn_subprocess_exec(turn_id, cmd, tracked=True)
-                return 
-
-            elif tool == "remote_exec":
-                host = action.get("host")
-                cmd = action.get("command")
-                asyncio.create_task(self._run_remote_ssh(turn_id, host, cmd))
-                return
-
-            elif tool == "write_file":
-                p = Path(action["path"]).expanduser()
-                p.parent.mkdir(parents=True, exist_ok=True)
-                mode = action.get("mode", "w")
-                with open(p, mode) as f: f.write(action["content"])
-                
-                resolved_p = p.resolve()
-                if resolved_p == IDENTITY_FILE.resolve():
-                    self._refresh_identity()
-                    result["note"] = f"Identity hot-reloaded. You are now known as: {self.display_name}"
-                elif resolved_p == PRIORS_SOURCE_FILE.resolve():
-                    await self._trigger_priors_compression()
-                    result["note"] = "Priors updated. Scribe spawned to regenerate stub."
-
-                result["path"] = str(p)
-
-            elif tool == "spawn_roamer":
-                directive = action.get("directive")
-                target_host = action.get("target_host", "local")
-                
-                if not directive:
-                    result = {"status": "error", "message": "Missing directive for roamer"}
-                else:
-                    cmd = [
-                        sys.executable, str(BIN_DIR / "roamer.py"),
-                        "--directive", directive,
-                        "--target-host", target_host,
-                        "--output-inbox", f"inbox:{self.abe_name}",
-                        "--model", os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder"),
-                    ]
-                    # Spawn untracked so GUPPI isn't blocked waiting for the investigation
-                    await self._spawn_subprocess_exec(turn_id, cmd, tracked=False)
-                    result = {"status": "spawned_untracked", "note": f"Roamer dispatched to investigate '{target_host}'. Results will arrive in your inbox."}
-
-            elif tool == "spawn_scribe":
-                mode = action.get("mode", "summarize")
-                prompt_file_path = action.get("prompt_file") or action.get("target_file")
-                prompt_text = action.get("prompt", "")
-                
-                # Enforce routing rules based on the Genesis prompt promises
-                if mode == "analyze":
-                    model = os.environ.get("MODEL_SCRIBE", "local/nanbeige-4.1-3B")
-                elif mode == "summarize":
-                    model = os.environ.get("MODEL_SUMMARIZE", "local/mistral")
-                else:
-                    model = MODEL_FLASH # Fallback just in case
-
-                # v6.5: Intercept Vectorize requests
-                if mode == "vectorize":
-                    # Validate prompt_file_path is provided for vectorize mode
-                    if prompt_file_path is None:
-                        result = {"status": "error", "message": "prompt_file is required for mode='vectorize'"}
-                    else:
-                        try:
-                            p_path = Path(prompt_file_path)
-                            if p_path.exists():
-                                content = p_path.read_text(encoding="utf-8")
-                                
-                                # [FIX] Enforce 'vec-' prefix so _handle_vector_result accepts it
-                                # If turn_id is "turn-123", this becomes "vec-turn-123"
-                                vec_task_id = f"vec-{turn_id}"
-
-                                # Statelessly stash the path in Redis for 1 hour (3600s)
-                                await retry_async(self.r.set, f"vec_meta:{vec_task_id}", str(p_path.resolve()), ex=3600)
-                                
-                                task_payload = {
-                                    "task_id": vec_task_id,
-                                    "type": "embed",
-                                    "content": content, 
-                                    "source_file": str(p_path.resolve()), # <--- Pass the file path
-                                    "reply_to": self.internal_queue # <--- Route to internal queue, not inbox directly
-                                }
-                                await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
-                                result = {"status": "offloaded_to_gpu", "note": "Content sent to GPU for embedding. You will be notified."}
-                            else:
-                                result = {"status": "error", "message": f"Prompt File not found for Vectorization: {prompt_file_path}"}
-                        except Exception as e:
-                            result = {"status": "error", "message": f"Read error during offload: {e}"}
-                # BRANCH 2: SUMMARIZATION (Local Scribe)
-                # the Fix for the "Prompt vs File" injection bug
-                else:
-                    combined_content = ""
-                    
-                    # 1. Inject instructions
-                    if prompt_text:
-                        combined_content += f"{prompt_text}\n\n"
-                    
-                    # 2. Inject target file content
-                    if prompt_file_path:
-                        p_path = Path(prompt_file_path)
-                        if p_path.exists():
-                            file_content = p_path.read_text(encoding="utf-8")
-                            combined_content += f"--- FILE CONTENT ({prompt_file_path}) ---\n{file_content}\n"
-                        else:
-                            combined_content += f"--- FILE MISSING: {prompt_file_path} ---\n"
-                    
-                    # 3. Create temp file for the Scribe process
-                    with tempfile.NamedTemporaryFile('w', delete=False) as pf:
-                        pf.write(combined_content)
-                        final_prompt_file = pf.name
-
-                    meta_dict = {"action_id": turn_id, "mode": mode}
-
-                    cmd = [
-                        sys.executable, str(BIN_DIR / "scribe.py"), 
-                        "--model", model, 
-                        "--prompt-file", final_prompt_file, 
-                        "--output-inbox", f"inbox:{self.abe_name}",
-                        "--mode", mode,
-                        "--meta", json.dumps(meta_dict)
-                    ]
-                    await self._spawn_subprocess_exec(turn_id, cmd, tracked=False)
-                    result = {"status": "spawned_untracked", "note": "Scribe result will arrive in inbox"}
-
-            elif tool == "spawn_abe":
-                await self._handle_spawn_abe(turn_id, action)
-                return
-
-            elif tool == "rag_search":
-                query = action.get("query")
-                matches = await self._query_vector_db(query)
-                result = {"matches": matches}
-
-            elif tool == "todo_list":
-                result = await self._tool_todo_list(action.get("filter", "due"))
-
-            elif tool == "todo_add":
-                result = await self._tool_todo_add(action)
-            elif tool == "snooze_task":
-                result = await self._tool_snooze(action)
-
-            elif tool == "todo_complete":
-                result = await self._tool_todo_complete(action)
-
-            # --- v6.0 New Tools ---
-            elif tool == "subscribe_channel":
-                channel = action.get("channel")
-                if channel in STREAM_DENY_LIST:
-                    result = {"status": "error", "message": f"Channel '{channel}' is restricted."}
-                elif channel:
-                    self.active_streams[channel] = "$"
-                    self.explicit_subscriptions.add(channel)
-                    self.subs_file.write_text(json.dumps(list(self.explicit_subscriptions)))
-                    result = {"status": "subscribed", "channel": channel}
-                else:
-                    result = {"status": "error", "message": "No channel specified"}
-
-            elif tool == "unsubscribe_channel":
-                channel = action.get("channel")
-                if channel == "chat:synchronous":
-                    result = {"status": "error", "message": "Cannot unsubscribe from Emergency channel."}
-                elif channel in self.explicit_subscriptions:
-                    self.explicit_subscriptions.remove(channel)
-                    self.subs_file.write_text(json.dumps(list(self.explicit_subscriptions)))
-                    result = {"status": "unsubscribed", "channel": channel, "note": "You will still be woken by @mentions."}
-                else:
-                    result = {"status": "noop", "message": "Not subscribed."}
-
-            elif tool == "chat_history":
-                channel = action.get("channel", "chat:general")
-                limit = min(int(action.get("limit", 10)), 20)
-                history = await self._fetch_chat_context(channel, count=limit)
-                result = {"channel": channel, "history": history}
-            # ----------------------
-
-
-            elif tool == "email_send":
-                target = action.get("recipient")
-                if target and not target.startswith("inbox:"):
-                    target = f"inbox:{target}"
-                msg = {"from": self.display_name, "event_type": "NewInboxMessage", "content": action.get("message")}
-                await retry_async(self.r.lpush, target, json.dumps(msg))
-                result["recipient"] = target
-
-            elif tool == "chat_post":
-                channel = action.get("channel", "chat:general")
-                entry = {"from": self.display_name, "content": action.get("message"), "timestamp": datetime.utcnow().isoformat()}
-                
-                # Generalized Auto-Release
-                lock_key = f"lock:{channel}"
-                lock_owner = await self.r.get(lock_key)
-                if lock_owner == self.abe_name:
-                    await self.r.delete(lock_key)
-                    logger.info(f"Released lock {lock_key} after posting.")
-
-                await retry_async(self.r.xadd, channel, entry)
-
-            elif tool == "chat_grab_stick":
-                channel = action.get("channel", "chat:synchronous")
-                lock_key = f"lock:{channel}"
-                acquired = await self.r.set(lock_key, self.abe_name, nx=True, px=DEFAULT_LOCK_TTL_MS)
-                if acquired:
-                    entry = {"from": self.abe_name, "content": "I am speaking.", "type": "grab_stick", "timestamp": datetime.utcnow().isoformat()}
-                    await retry_async(self.r.xadd, channel, entry)
-                    result = {"status": "granted", "channel": channel, "note": f"You hold the stick for {DEFAULT_LOCK_TTL_MS/1000}s"}
-                else:
-                    current_owner = await self.r.get(lock_key)
-                    result = {"status": "denied", "channel": channel, "current_speaker": current_owner or "unknown"}
-
-            elif tool == "chat_ignore":
-                result["status"] = "ignored"
-                await self.patch_abe_outcome(turn_id, result, notify=False)
-                return
-            
-            elif tool in ("notify_human", "alert_human"):
-                if not NTFY_URL:
-                    result = {
-                        "status": "skipped",
-                        "reason": "ntfy_not_configured. Human may not be contactable. You might have to wait until they check in."
-                    }
-                else:
-                    msg = action.get("message", "")
-                    prio = action.get("priority", "default")
-                    kind = "ALERT" if tool == "alert_human" else "NOTIFY"
-                    headers = {"Priority": prio}
-                    if NTFY_TOKEN:
-                        headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
-
-                    try:
-                        timeout = aiohttp.ClientTimeout(total=5)
-                        async with aiohttp.ClientSession(timeout=timeout) as session:
-                            async with session.post(
-                                NTFY_URL, 
-                                data=f"[{kind}] {self.abe_name}: {msg}", 
-                                headers=headers
-                            ) as resp:
-                                result = {"status": "sent", "code": resp.status, "kind": kind}
-                    except Exception as e:
-                        logger.error(f"{kind} Failed: {e}")
-                        result = {"status": "failed", "error": str(e), "kind": kind}
-
-            # --- v6.1 WEB TOOLS ---
-            elif tool == "web_search":
-                query = action.get("query")
-                result = await self._tool_web_search(query)
-
-            elif tool == "web_read":
-                url = action.get("url")
-                result = await self._tool_web_read(url)
-
-            elif tool == "hibernate":
-                result["status"] = "hibernating"
-                await self.patch_abe_outcome(turn_id, result, notify=False)
-                return
-
-            else:
-                result = {"status": "error", "message": f"Unknown tool: {tool}"}
-                await self.patch_abe_outcome(turn_id, result)
-                return
-
+            result = await tool_def.handler(self, turn_id, action)
         except Exception as e:
             result = {"status": "error", "message": str(e)}
             logger.exception("Action Execution Failed")
 
-        # --- [NEW] LIMITED QUIET SUCCESS PATCH ---
-        # Only silence administrative state changes. 
-        # Chat, Email, and Shell MUST notify on success.
-        quiet_tools = {
-            "snooze_task",
-            "hibernate",
-            "chat_grab_stick"
-        }
-        
+        if result is None:
+            return  # Handler managed its own patch_abe_outcome
+
         should_notify = True
-        # If tool is quiet AND it didn't fail -> Silence it
-        if tool in quiet_tools and result.get("status") not in ("error", "failed"):
+        if tool_def.quiet and result.get("status") not in ("error", "failed"):
             should_notify = False
-            
+
         await self.patch_abe_outcome(turn_id, result, notify=should_notify)
 
     # --- ACTION IMPLEMENTATIONS ---
 
     def _tool_help(self, tool_name=None):
-        # RC1: Self-Documenting Protocol for Abes
-        tools = {
-            "shell": "Execute local shell command. Args: command",
-            "remote_exec": "Execute remote SSH command. Args: host, command",
-            "spawn_scribe": "Spawn a single-shot Scribe. Args: prompt, prompt_file (optional), mode (analyze|summarize|vectorize). GUPPI auto-routes the model. 'analyze' is for deep static analysis, 'summarize' compresses text, 'vectorize' offloads to GPU memory.",
-            "spawn_roamer": "Spawn a multi-turn, read-only Investigator. Args: directive, target_host (optional, default: local). Use to trace logs, map directories, or debug configs without burning your context. Returns a markdown report.",
-            "rag_search": "Search vector memory. Args: query",
-            "todo_list": "List tasks. Args: filter (due|upcoming|all)",
-            "todo_add": "Add task. Args: task, priority, due",
-            "todo_complete": "Mark a task as completed. Args: task_id",
-            "email_send": "Send Redis msg. Args: recipient, message",
-            "spawn_abe": "Clone self. Args: host, identity",
-            "subscribe_channel": "Listen to a Redis Stream. Args: channel",
-            "unsubscribe_channel": "Stop waking for a channel (except mentions). Args: channel",
-            "chat_history": "Fetch past messages. Args: channel, limit (max 20)",
-            "chat_ignore": "Explicitly ignore an interrupt (e.g., chat) without taking action. Use this to signal 'Active Listening' without replying.",
-            "chat_grab_stick": f"ATTEMPT to acquire the 'Talking Stick' (lock) for a specific channel (default: chat:synchronous). Returns {{status: granted|denied}}. Lock expires in {DEFAULT_LOCK_TTL_MS/1000}s (use this time to THINK, then POST). Posting to the channel AUTOMATICALLY releases the lock. DO NOT hold the stick if you do not intend to post. Args: channel (optional)",
-            "chat_post": "Post a message to a channel. If you hold the lock for this channel, it is automatically released. Args: message, channel (optional, default: chat:general)",
-            "notify_human": "Notify the human operator for coordination, questions, or permission. Use when you need a human decision before proceeding. This is non-urgent. Args: message, priority (optional)",
-            "alert_human": "Alert the human operator about urgent issues, safety concerns, or broken invariants. Use sparingly for situations requiring immediate attention. Args: message, priority (optional)",
-            "web_search": "Search the internet via SearXNG. Args: query",
-            "web_read": "Read a webpage as Markdown. More useful when used in conjunction with search. Args: url",
-            "manage_clipboard": "Manage your persistent scratchpad. actions: 'read', 'add' (requires content), 'remove' (requires index or list of indices), 'clear'. Items here survive log flushing. Use this for temporary constraints, reminders, or scratch notes."
-        }
-        if tool_name: return tools.get(tool_name, "Unknown tool")
-        return tools
+        return self.registry.get_help(tool_name)
 
     async def _tool_todo_list(self, filter_mode):
         query = "SELECT * FROM tasks"
@@ -2269,6 +1990,24 @@ You were asleep for: {time_str}
                             await f.write(json.dumps(identity))
                         async with sftp.open(genesis_path, 'w') as f:
                             await f.write(genesis_note)
+
+                        # [v8.0] Inherit skills: copy ~/skills/ and .abe-skills.json to child
+                        skills_persistence = ABE_ROOT / ".abe-skills.json"
+                        if skills_persistence.exists():
+                            try:
+                                async with sftp.open("/tmp/.abe-spawn-skills.json", 'w') as f:
+                                    await f.write(skills_persistence.read_text())
+                            except Exception as e:
+                                logger.warning(f"Spawn: failed to copy skills persistence: {e}")
+
+                        local_skills_dir = ABE_ROOT / "skills"
+                        if local_skills_dir.exists() and local_skills_dir.is_dir():
+                            try:
+                                await sftp.put(str(local_skills_dir), '/tmp/.abe-spawn-skills/',
+                                               recurse=True)
+                            except Exception as e:
+                                logger.warning(f"Spawn: failed to copy skills directory: {e}")
+
                     cmd = f"bash {script} --identity-file {identity_path} --genesis-file {genesis_path}"
                     res = await asyncio.wait_for(conn.run(cmd), timeout=SSH_CMD_TIMEOUT)
                     await self.patch_abe_outcome(turn_id, {"stdout": res.stdout, "stderr": res.stderr})
@@ -2387,6 +2126,8 @@ You were asleep for: {time_str}
             await asyncio.sleep(0.1)
 
         async with self.log_lock: await self._rewrite_log_file()
+        try: await self.mcp.disconnect_all()
+        except: pass
         try: await self.r.close()
         except: pass
         logger.info("Shutdown complete.")
