@@ -1766,6 +1766,27 @@ You were asleep for: {time_str}
             if skills_context:
                 skills_block = f"\n[ACTIVE_SKILLS]\n{skills_context}\n"
 
+        # [NEW] 8.0: Dynamic tool documentation for non-builtin tools
+        # Builtins are covered by the static genesis prompt; this block surfaces
+        # MCP and skill tools that vary at runtime so the LLM has an accurate list.
+        dynamic_tools_block = ""
+        dynamic_tools = [
+            t for t in self.registry.list_for_context()
+            if not t["source"].startswith("builtin")
+        ]
+        pending_servers = self.mcp.list_pending_servers()
+        if dynamic_tools or pending_servers:
+            lines = []
+            if dynamic_tools:
+                lines.append("Connected tools:")
+                for t in dynamic_tools:
+                    lines.append(f"  - {t['name']} ({t['source']}): {t['description']}")
+            if pending_servers:
+                lines.append("Unconnected MCP servers (will auto-connect on first tool call):")
+                for srv, url in pending_servers.items():
+                    lines.append(f"  - mcp.{srv}.* @ {url}")
+            dynamic_tools_block = "\n[DYNAMIC_TOOLS]\n" + "\n".join(lines) + "\n"
+
         # Assemble Prompt
         return f"""
 {genesis}
@@ -1779,6 +1800,7 @@ You were asleep for: {time_str}
 {summaries}
 {clipboard_block}
 {skills_block}
+{dynamic_tools_block}
 {orientation_block}
 {recent_log_block}
 [CURRENTLY_DUE_TASKS]
