@@ -1758,10 +1758,11 @@ You were asleep for: {time_str}
         clipboard_content = self.clipboard.read()
         clipboard_block = f"\n[ACTIVE_CLIPBOARD]\n(Persistent scratchpad. Use GUPPI tool 'manage_clipboard' to edit)\n{clipboard_content}\n"
 
-        # [NEW] 8.0: Skills context injection
+        # [NEW] 8.0: Skills context injection (selective by event type)
+        event_type = current_event_data.get("type") if isinstance(current_event_data, dict) else None
         skills_block = ""
         if self.skills.loaded_skills:
-            skills_context = self.skills.get_context_blocks()
+            skills_context = self.skills.get_context_blocks(event_type=event_type)
             if skills_context:
                 skills_block = f"\n[ACTIVE_SKILLS]\n{skills_context}\n"
 

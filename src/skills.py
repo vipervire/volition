@@ -132,10 +132,24 @@ class SkillManager:
             "loaded": sorted(self.loaded_skills.keys()),
         }
 
-    def get_context_blocks(self) -> str:
-        """Return combined context.md content from all loaded skills for prompt injection."""
+    def get_context_blocks(self, event_type: Optional[str] = None) -> str:
+        """Return context.md content from skills relevant to the current event type.
+
+        Skills may declare a ``relevant_events`` list in their manifest. If set,
+        the skill's context block is only injected when the current event_type
+        matches one of the declared values. Skills without ``relevant_events``
+        are always included (backward-compatible default).
+        """
         blocks = []
         for skill_name, manifest in self.loaded_skills.items():
+            relevant_events = manifest.get("relevant_events", [])
+            if relevant_events and event_type and event_type not in relevant_events:
+                logger.debug(
+                    f"Skill '{skill_name}': skipping context (event_type='{event_type}' "
+                    f"not in relevant_events={relevant_events})"
+                )
+                continue
+
             ctx_filename = manifest.get("context_file", "context.md")
             ctx_path = self.skills_dir / skill_name / ctx_filename
             if ctx_path.exists():
