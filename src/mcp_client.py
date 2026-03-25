@@ -46,6 +46,32 @@ class MCPManager:
         self.abe_name = abe_name
         # server_name -> {"client": client_obj, "session": session_obj, "config": {...}}
         self._connections: Dict[str, Dict] = {}
+        # server_name -> {"url": ..., "headers": ..., "flash_allowed_tools": [...]}
+        self._pending_configs: Dict[str, Dict] = {}
+
+    def queue_server(self, server_name: str, url: str, headers: Optional[Dict[str, str]] = None, flash_allowed_tools: Optional[List[str]] = None):
+        """Store server config for lazy connection on first tool use."""
+        self._pending_configs[server_name] = {
+            "url": url,
+            "headers": headers or {},
+            "flash_allowed_tools": flash_allowed_tools or [],
+        }
+        logger.info(f"MCP queued (lazy): {server_name} @ {url}")
+
+    async def connect_pending(self, server_name: str) -> bool:
+        """Connect a queued server on demand. Returns True if tools were registered."""
+        cfg = self._pending_configs.pop(server_name, None)
+        if not cfg:
+            return False
+        await self.connect(server_name, cfg["url"], cfg["headers"])
+        if server_name in self._connections:
+            await self.discover_and_register(server_name, flash_allowed_tools=cfg["flash_allowed_tools"])
+            return True
+        return False
+
+    def list_pending_servers(self) -> Dict[str, str]:
+        """Return names and URLs of servers queued but not yet connected."""
+        return {name: cfg["url"] for name, cfg in self._pending_configs.items()}
 
     async def connect(self, server_name: str, url: str, headers: Optional[Dict[str, str]] = None):
         """Connect to an MCP server over streamable HTTP."""
@@ -205,7 +231,7 @@ class MCPManager:
 
 
 async def load_mcp_config(mcp_manager: MCPManager, config_path) -> None:
-    """Load ~/.abe-mcp.json and connect all configured servers."""
+    """Load ~/.abe-mcp.json and queue all configured servers for lazy connection."""
     from pathlib import Path
     p = Path(config_path)
     if not p.exists():
@@ -224,5 +250,4 @@ async def load_mcp_config(mcp_manager: MCPManager, config_path) -> None:
         headers = server_cfg.get("headers", {})
         flash_allowed = server_cfg.get("flash_allowed_tools", [])
 
-        await mcp_manager.connect(server_name, url, headers)
-        await mcp_manager.discover_and_register(server_name, flash_allowed_tools=flash_allowed)
+        mcp_manager.queue_server(server_name, url, headers, flash_allowed_tools=flash_allowed)

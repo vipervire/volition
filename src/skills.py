@@ -52,7 +52,7 @@ class SkillManager:
         if skill_name in self.loaded_skills:
             return {"status": "already_loaded", "skill": skill_name}
 
-        # 1. Connect declared MCP servers
+        # 1. Queue declared MCP servers for lazy connection on first tool use
         for server_alias, server_cfg in manifest.get("mcp_servers", {}).items():
             qualified_name = f"{skill_name}.{server_alias}"
             url = server_cfg.get("url")
@@ -61,8 +61,7 @@ class SkillManager:
                 continue
             headers = server_cfg.get("headers", {})
             flash_allowed = server_cfg.get("flash_allowed_tools", [])
-            await self.mcp.connect(qualified_name, url, headers)
-            await self.mcp.discover_and_register(qualified_name, flash_allowed_tools=flash_allowed)
+            self.mcp.queue_server(qualified_name, url, headers, flash_allowed_tools=flash_allowed)
 
         # 2. Apply flash_policy overrides on already-registered tools
         flash_policy = manifest.get("flash_policy", {})
@@ -103,9 +102,10 @@ class SkillManager:
 
         manifest = self.loaded_skills[skill_name]
 
-        # Disconnect MCP servers registered by this skill
+        # Disconnect or dequeue MCP servers registered by this skill
         for server_alias in manifest.get("mcp_servers", {}):
             qualified_name = f"{skill_name}.{server_alias}"
+            self.mcp._pending_configs.pop(qualified_name, None)
             await self.mcp.disconnect(qualified_name)
 
         # Unregister any tools sourced from this skill

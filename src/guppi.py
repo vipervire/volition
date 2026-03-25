@@ -1794,6 +1794,16 @@ You were asleep for: {time_str}
         logger.info(f"Executing Tool: {tool_name}")
 
         tool_def = self.registry.get(tool_name)
+        if not tool_def and tool_name and tool_name.startswith("mcp."):
+            # Lazy MCP connect: on first use of mcp.<server>.<tool>, connect the server
+            parts = tool_name.split(".", 2)
+            if len(parts) >= 2:
+                server_name = parts[1]
+                if server_name in self.mcp._pending_configs:
+                    logger.info(f"Lazy-connecting MCP server '{server_name}' for tool '{tool_name}'")
+                    await self.mcp.connect_pending(server_name)
+                    tool_def = self.registry.get(tool_name)
+
         if not tool_def:
             result = {"status": "error", "message": f"Unknown tool: {tool_name}"}
             await self.patch_abe_outcome(turn_id, result)
