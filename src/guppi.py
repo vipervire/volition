@@ -1412,7 +1412,7 @@ class GuppiDaemon:
             event_type = event_data.get("event")
             is_chat = (event_type == "Chat")
             
-            if force_model:
+            if force_model is not None:
                 model = force_model
                 is_flash = (model == MODEL_FLASH)
             else:
@@ -1467,7 +1467,7 @@ class GuppiDaemon:
             tool = action.get("tool")
 
             # Implicit Escalation
-            if is_flash and tool in FLASH_FORBIDDEN_TOOLS:
+            if is_flash and tool in FLASH_FORBIDDEN_TOOLS and force_model is None:
                 logger.warning(f"ESCALATION: Flash attempted {tool}. Waking Pro.")
                 await self.log_guppi_event("EscalationTrigger", f"Denied Flash tool: {tool}")
 
