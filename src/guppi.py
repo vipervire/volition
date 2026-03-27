@@ -122,6 +122,7 @@ CONTEXT_LIMITS = {
     "qwen/qwen3.5-35b-a3b": 262_144,
     "qwen/qwen3.5-9b": 256_000,
     "qwen/qwen3.5-27b": 262_144,
+    "qwen/qwen3.5-flash-02-23": 1_000_000,
 }
 DEFAULT_CONTEXT_LIMIT = 32_768
 FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
