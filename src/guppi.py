@@ -118,6 +118,10 @@ CONTEXT_LIMITS = {
     "nomic-embed-text": 8_192,
     "minimax/minimax-m2.5:free": 196_608,
     "stepfun/step-3.5-flash:free": 256_000,
+    "deepseek3.2": 163_840,
+    "qwen/qwen3.5-35b-a3b": 262_144,
+    "qwen/qwen3.5-9b": 256_000,
+    "qwen/qwen3.5-27b": 262_144,
 }
 DEFAULT_CONTEXT_LIMIT = 32_768
 FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
@@ -1611,7 +1615,10 @@ class GuppiDaemon:
                     except Exception:
                         pass
 
-                choice = data["choices"][0]
+                choices = data.get("choices")
+                if not choices:
+                    raise LLMOutputError(f"API returned empty or null choices. Full response: {data}")
+                choice = choices[0]
                 message = choice["message"]
 
                 text = message.get("content", "")
