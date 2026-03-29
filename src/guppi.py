@@ -1527,9 +1527,10 @@ class GuppiDaemon:
 
     async def call_abe_api(self, prompt_text: str, model_id: str = GEMINI_MODEL) -> Dict:
         # Everything routes through the OpenAI-compatible endpoint now
-        return await self._call_openai_compat(model_id, prompt_text)
-    
-    async def _call_openai_compat(self, model_id, prompt):
+        is_pro = (model_id == MODEL_PRO)
+        return await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro)
+
+    async def _call_openai_compat(self, model_id, prompt, is_pro=False):
         # 1. Detect Thinking Intent
         use_thinking = ":thinking" in model_id
         if use_thinking: 
@@ -1582,9 +1583,18 @@ class GuppiDaemon:
             "top_p": target_top_p,
         }
 
-        # 3. Route the Thinking Mechanism
-        # Only OpenRouter needs the explicit flag. llama.cpp handles it natively now.
-        if use_thinking and "openrouter" in base_url.lower():
+        # 3. Apply Qwen-specific sampling parameters
+        if "qwen" in actual_model.lower():
+            payload["temperature"] = 0.6
+            payload["top_p"] = 0.95
+            payload["top_k"] = 20
+            payload["min_p"] = 0.0
+            payload["presence_penalty"] = 0.0
+            payload["repetition_penalty"] = 1.0
+
+        # 4. Route the Thinking Mechanism
+        # Enable reasoning for PRO-tier calls on OpenRouter. llama.cpp handles it natively via <think> tags.
+        if is_pro and "openrouter" in base_url.lower():
             payload["reasoning"] = {"effort": "high"}
 
         async with aiohttp.ClientSession() as session:
