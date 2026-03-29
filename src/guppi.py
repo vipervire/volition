@@ -1581,6 +1581,7 @@ class GuppiDaemon:
             "response_format": {"type": "json_object"},
             "temperature": target_temp,
             "top_p": target_top_p,
+            "top_k": target_top_k
         }
 
         # 3. Apply Qwen-specific sampling parameters
