@@ -1586,10 +1586,10 @@ class GuppiDaemon:
         # 3. Apply Qwen-specific sampling parameters
         if "qwen" in actual_model.lower():
             payload["temperature"] = 0.6
-            payload["top_p"] = 0.95
+            payload["top_p"] = 0.90
             payload["top_k"] = 20
             payload["min_p"] = 0.0
-            payload["presence_penalty"] = 0.0
+            payload["presence_penalty"] = 0.2
             payload["repetition_penalty"] = 1.0
 
         # 4. Route the Thinking Mechanism
