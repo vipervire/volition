@@ -1577,7 +1577,10 @@ class GuppiDaemon:
 
         payload = {
             "model": actual_model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": "Be concise. Do not repeat information from the user's message. Avoid preamble, filler phrases, and summaries."},
+                {"role": "user", "content": prompt},
+            ],
             "response_format": {"type": "json_object"},
             "temperature": target_temp,
             "top_p": target_top_p,
