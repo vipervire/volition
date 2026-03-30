@@ -264,7 +264,8 @@ class GuppiDaemon:
         self._stopping = False
         self._bg_tasks: List[asyncio.Task] = []
         self._is_pruning = False
-        
+        self._last_prune_time: float = 0.0
+
         self.processed_triggers = {}
         self.processed_triggers_ttl = 90
 
@@ -707,6 +708,7 @@ class GuppiDaemon:
     async def _prune_logs(self):
         logger.info("[PRUNE] we ENTER _prune_logs")
         if self._is_pruning: return # Double check
+        if time.time() - self._last_prune_time < 120: return  # 2-minute cooldown between prunes
         self._is_pruning = True
         logger.info("[PRUNE] method _is_pruning set TRUE")
         try:
@@ -766,6 +768,7 @@ class GuppiDaemon:
         finally:
             logger.info("[PRUNE] EXIT _prune_logs (before reset)")
             self._is_pruning = False
+            self._last_prune_time = time.time()
 
 
     # --- EVENT & INTENT LOGGING ---
@@ -871,8 +874,8 @@ class GuppiDaemon:
             # THE FIX: Extract the event type safely from the payload envelope
             event_type = norm["observed"].get("event_type", norm["observed"].get("event", ""))
             
-            # THE FIX: Only ingest if Scribe actually succeeded (TaskCompleted)
-            if meta.get("mode") == "summarize" and content and event_type == "TaskCompleted":
+            # Ingest if Scribe succeeded (ScribeResult from untracked, TaskCompleted from tracked)
+            if meta.get("mode") == "summarize" and content and event_type in ("TaskCompleted", "ScribeResult"):
                 source_file = meta.get("source_tier_1", "unknown_source.jsonl")
                 summary_text = content
                 
@@ -1074,6 +1077,18 @@ class GuppiDaemon:
                 except Exception as e:
                     logger.error(f"Failed to write stub: {e}")
             return # <--- EXIT without Thinking
+
+        # B0. Scribe Failure Detection (must check before generic maintenance gate)
+        event_type_b = norm["observed"].get("event_type", norm["observed"].get("event", ""))
+        if event_type_b == "ScribeFailed":
+            content_str = str(norm["observed"].get("content", ""))
+            source_file = meta.get("source_tier_1", "unknown")
+            await self.log_guppi_event(
+                "ScribeFailed",
+                f"Scribe failed for {source_file}: {content_str[:200]}",
+                source="GUPPI:Background"
+            )
+            return  # EXIT without Thinking
 
         # B. Silent Scribe / Background Tasks
         if meta.get("maintenance") is True or "source_tier_1" in meta:
