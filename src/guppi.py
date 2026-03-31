@@ -121,6 +121,7 @@ CONTEXT_LIMITS = {
     "deepseek3.2": 163_840,
     "qwen/qwen3.5-35b-a3b": 262_144,
     "qwen/qwen3.5-9b": 256_000,
+    "qwen/qwen2.5-coder-7b-instruct": 32_768,
     "qwen/qwen3.5-27b": 262_144,
     "qwen/qwen3.5-flash-02-23": 1_000_000,
 }
@@ -1595,7 +1596,7 @@ class GuppiDaemon:
         payload = {
             "model": actual_model,
             "messages": [
-                {"role": "system", "content": "Be concise. Do not repeat information from the user's message. Avoid preamble, filler phrases, and summaries."},
+                #{"role": "system", "content": "Be concise. Do not repeat information from the user's message. Avoid preamble, filler phrases, and summaries."},
                 {"role": "user", "content": prompt},
             ],
             "temperature": target_temp,
@@ -1612,16 +1613,17 @@ class GuppiDaemon:
         # 3. Apply Qwen-specific sampling parameters
         if "qwen" in actual_model.lower():
             payload["temperature"] = 0.6
-            payload["top_p"] = 0.90
+            payload["top_p"] = 0.95
             payload["top_k"] = 20
             payload["min_p"] = 0.0
-            payload["presence_penalty"] = 0.2
+            payload["presence_penalty"] = 1.5
             payload["repetition_penalty"] = 1.0
 
         # 4. Route the Thinking Mechanism
         # Enable reasoning for PRO-tier calls on OpenRouter. llama.cpp handles it natively via <think> tags.
         if is_pro and "openrouter" in base_url.lower():
             payload["reasoning"] = {"effort": "high"}
+            payload["presence_penalty"] = 0.0
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
