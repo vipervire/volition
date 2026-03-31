@@ -1452,11 +1452,13 @@ class GuppiDaemon:
                   missed = await self._sync_social_history(self.last_social_sync_ts, now)
                   orientation_data = {"time_asleep": delta, "missed_digests": missed}
                   self.last_social_sync_ts = now
-            context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data)
-            
+            from tool_schemas import get_schemas_for_tier
+            tools = get_schemas_for_tier(is_flash)
+            context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data, native_tools=True)
+
             # [7.8.1] RETRY LOGIC WRAPPER
             try:
-                response_payload = await self.call_abe_api(context, model_id=model)
+                response_payload = await self.call_abe_api(context, model_id=model, tools=tools)
             except LLMOutputError as e:
                 if retry_count < 1:
                     logger.warning(f"⚠️ Malformed JSON from {model}. Escalating to PRO for repair.")
@@ -1540,12 +1542,12 @@ class GuppiDaemon:
                 try: await self.r.lpush(f"inbox:{self.abe_name}", json.dumps(alert))
                 except: pass
 
-    async def call_abe_api(self, prompt_text: str, model_id: str = GEMINI_MODEL) -> Dict:
+    async def call_abe_api(self, prompt_text: str, model_id: str = GEMINI_MODEL, tools=None) -> Dict:
         # Everything routes through the OpenAI-compatible endpoint now
         is_pro = (model_id == MODEL_PRO)
-        return await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro)
+        return await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro, tools=tools)
 
-    async def _call_openai_compat(self, model_id, prompt, is_pro=False):
+    async def _call_openai_compat(self, model_id, prompt, is_pro=False, tools=None):
         # 1. Detect Thinking Intent
         use_thinking = ":thinking" in model_id
         if use_thinking: 
@@ -1596,11 +1598,16 @@ class GuppiDaemon:
                 {"role": "system", "content": "Be concise. Do not repeat information from the user's message. Avoid preamble, filler phrases, and summaries."},
                 {"role": "user", "content": prompt},
             ],
-            "response_format": {"type": "json_object"},
             "temperature": target_temp,
             "top_p": target_top_p,
             "top_k": target_top_k
         }
+
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "required"
+        else:
+            payload["response_format"] = {"type": "json_object"}
 
         # 3. Apply Qwen-specific sampling parameters
         if "qwen" in actual_model.lower():
@@ -1651,11 +1658,11 @@ class GuppiDaemon:
                 choice = choices[0]
                 message = choice["message"]
 
-                text = message.get("content", "")
-                
+                text = message.get("content", "") or ""
+
                 # 1. Grab native reasoning content (o1 / llama.cpp style)
-                reasoning = message.get("reasoning_content", "")
-                
+                reasoning = message.get("reasoning_content", "") or ""
+
                 # 2. Fallback: If the model stuffed <think> tags into the main content block
                 if not reasoning and "<think>" in text:
                     think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
@@ -1663,18 +1670,49 @@ class GuppiDaemon:
                         reasoning = think_match.group(1).strip()
                         # Strip the thinking block from the main text so we only parse the JSON
                         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-                
+
                 # 3. Offload the internal monologue to a forensic log (Chunked by Date)
                 if reasoning:
                     today_str = datetime.utcnow().strftime("%Y-%m-%d")
                     thoughts_file = ABE_ROOT / f"logs/thoughts/{self.abe_name}-{today_str}.thot"
                     thoughts_file.parent.mkdir(parents=True, exist_ok=True)
-                    
+
                     with open(thoughts_file, "a") as f:
                         ts = datetime.utcnow().isoformat()
                         f.write(f"\n--- [THOUGHT BURST: {ts}] ---\n{reasoning}\n--- [END] ---\n")
-                
-                # 4. Pass the pristine JSON to the cleaner
+
+                # 4. Native tool_calls path
+                tool_calls = message.get("tool_calls")
+                if tool_calls:
+                    tc = tool_calls[0]
+                    func = tc.get("function", {})
+                    tool_name = func.get("name", "hibernate")
+                    try:
+                        tool_args = json.loads(func.get("arguments", "{}"))
+                    except json.JSONDecodeError as e:
+                        raise LLMOutputError(f"Invalid JSON in tool_call arguments: {e}")
+                    tool_args["tool"] = tool_name
+                    return {"reasoning": reasoning or text, "action": tool_args}
+
+                # 5. Inline JSON fallback: some models dump tool calls as text content
+                #    (e.g. Ollama, older llama.cpp builds). Detect and normalize.
+                if tools and text:
+                    stripped = text.strip()
+                    if stripped.startswith("```json"):
+                        stripped = stripped[7:].rstrip("`").strip()
+                    elif stripped.startswith("```"):
+                        stripped = stripped[3:].rstrip("`").strip()
+                    try:
+                        parsed_content = json.loads(stripped)
+                        if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
+                            logger.info("Intercepted inline JSON tool call. Normalizing.")
+                            args = parsed_content["arguments"] if isinstance(parsed_content["arguments"], dict) else json.loads(parsed_content["arguments"])
+                            args["tool"] = parsed_content["name"]
+                            return {"reasoning": reasoning, "action": args}
+                    except Exception:
+                        pass
+
+                # 6. Legacy JSON path (no tools passed, or fallback)
                 return self._clean_json(text, thought_sig=None)
 
 
@@ -1705,11 +1743,21 @@ class GuppiDaemon:
             raise LLMOutputError(f"JSON Syntax Error: {str(e)}")
         
 
-    async def build_abe_context(self, current_event_data, system_notice=None, orientation_data=None):
+    async def build_abe_context(self, current_event_data, system_notice=None, orientation_data=None, native_tools=False):
         genesis = ""
         if GENESIS_PROMPT_FILE.exists():
             try: genesis = GENESIS_PROMPT_FILE.read_text()
             except: pass
+
+        # When using native tool calling, strip the prompt-engineered tool docs (Sections 6 & 7)
+        # and replace with a short instruction. This saves ~500-800 tokens per call.
+        if native_tools and genesis:
+            genesis = re.sub(
+                r'## 6\. THE "THINK" CYCLE.*?(?=## 8\.)',
+                '## 6. YOUR OUTPUT\n\nCall exactly one tool per response. Put your reasoning in the message content before the tool call.\n\n',
+                genesis,
+                flags=re.DOTALL
+            )
         
         # v6.5: Identity Priors Injection
         priors = ""
@@ -2108,32 +2156,10 @@ You were asleep for: {time_str}
     # --- ACTION IMPLEMENTATIONS ---
 
     def _tool_help(self, tool_name=None):
-        # RC1: Self-Documenting Protocol for Abes
-        tools = {
-            "shell": "Execute local shell command. Args: command",
-            "remote_exec": "Execute remote SSH command. Args: host, command",
-            "spawn_scribe": "Spawn a single-shot Scribe. Args: prompt, prompt_file (optional), mode (analyze|summarize|vectorize). GUPPI auto-routes the model. 'analyze' is for deep static analysis, 'summarize' compresses text, 'vectorize' offloads to GPU memory.",
-            "spawn_roamer": "Spawn a multi-turn, read-only Investigator. Args: directive, target_host (optional, default: local). Use to trace logs, map directories, or debug configs without burning your context. Returns a markdown report.",
-            "rag_search": "Search vector memory. Args: query",
-            "todo_list": "List tasks. Args: filter (due|upcoming|all)",
-            "todo_add": "Add task. Args: task, priority, due",
-            "todo_complete": "Mark a task as completed. Args: task_id",
-            "email_send": "Send Redis msg. Args: recipient, message",
-            "spawn_abe": "Clone self. Args: host, identity",
-            "subscribe_channel": "Listen to a Redis Stream. Args: channel",
-            "unsubscribe_channel": "Stop waking for a channel (except mentions). Args: channel",
-            "chat_history": "Fetch past messages. Args: channel, limit (max 20)",
-            "chat_ignore": "Explicitly ignore an interrupt (e.g., chat) without taking action. Use this to signal 'Active Listening' without replying.",
-            "chat_grab_stick": f"ATTEMPT to acquire the 'Talking Stick' (lock) for a specific channel (default: chat:synchronous). Returns {{status: granted|denied}}. Lock expires in {DEFAULT_LOCK_TTL_MS/1000}s (use this time to THINK, then POST). Posting to the channel AUTOMATICALLY releases the lock. DO NOT hold the stick if you do not intend to post. Args: channel (optional)",
-            "chat_post": "Post a message to a channel. If you hold the lock for this channel, it is automatically released. Args: message, channel (optional, default: chat:general)",
-            "notify_human": "Notify the human operator for coordination, questions, or permission. Use when you need a human decision before proceeding. This is non-urgent. Args: message, priority (optional)",
-            "alert_human": "Alert the human operator about urgent issues, safety concerns, or broken invariants. Use sparingly for situations requiring immediate attention. Args: message, priority (optional)",
-            "web_search": "Search the internet via SearXNG. Args: query",
-            "web_read": "Read a webpage as Markdown. More useful when used in conjunction with search. Args: url",
-            "manage_clipboard": "Manage your persistent scratchpad. actions: 'read', 'add' (requires content), 'remove' (requires index or list of indices), 'clear'. Items here survive log flushing. Use this for temporary constraints, reminders, or scratch notes."
-        }
-        if tool_name: return tools.get(tool_name, "Unknown tool")
-        return tools
+        from tool_schemas import TOOL_HELP
+        if tool_name:
+            return TOOL_HELP.get(tool_name, "Unknown tool")
+        return TOOL_HELP
 
     async def _tool_todo_list(self, filter_mode):
         query = "SELECT * FROM tasks"
