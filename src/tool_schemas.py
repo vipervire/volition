@@ -378,22 +378,41 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "reload_tools",
+            "description": "Reloads MCP server connections and re-discovers available tools. Optionally activate or deactivate a server by name. Use help(tool_name='mcp_tools') to see all servers and their tools.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "activate": {"type": "string", "description": "Name of an MCP server to activate. Its tools will appear in your next cycle."},
+                    "deactivate": {"type": "string", "description": "Name of an MCP server to deactivate. Its tools will be removed from your next cycle."}
+                },
+                "required": []
+            }
+        }
+    },
 ]
 
 # Tools the Flash (chat) tier is not allowed to execute.
 # These are filtered out of the schema before sending, so Flash never sees them.
-FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
+FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe", "reload_tools"}
 
 
-def get_schemas_for_tier(is_flash: bool) -> list:
+def get_schemas_for_tier(is_flash: bool, mcp_schemas: list = None) -> list:
     """Return tool schemas appropriate for the given model tier.
 
     Flash tier receives a reduced schema that excludes high-risk tools,
     preventing accidental or unauthorized use without requiring post-hoc escalation.
+    MCP schemas (from active servers) are appended for Pro tier only.
     """
-    if not is_flash:
-        return TOOL_SCHEMAS
-    return [s for s in TOOL_SCHEMAS if s["function"]["name"] not in FLASH_FORBIDDEN_TOOLS]
+    if is_flash:
+        return [s for s in TOOL_SCHEMAS if s["function"]["name"] not in FLASH_FORBIDDEN_TOOLS]
+    base = list(TOOL_SCHEMAS)
+    if mcp_schemas:
+        base.extend(mcp_schemas)
+    return base
 
 
 # Auto-generated help dict for the 'help' tool handler.

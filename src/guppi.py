@@ -249,6 +249,10 @@ class GuppiDaemon:
         
         # [NEW] 7.8: Initialize Clipboard
         self.clipboard = Clipboard(ABE_ROOT / f".abe-clipboard-{self.abe_name}.md")
+
+        # MCP Bridge: manages external MCP server connections and tool discovery
+        from mcp_bridge import MCPBridge
+        self.mcp_bridge = MCPBridge(ABE_ROOT / ".mcp-servers.json", logger)
         
         # v7.2: Dedicated Internal Queue for System Callbacks (Vectors/RPC)
         self.internal_queue = f"internal:{self.abe_name}"
@@ -1231,7 +1235,13 @@ class GuppiDaemon:
     async def main_wait_loop(self):
         logger.info("Entering Main Event Loop (Volition 7.8: Refractory + Orientation)...")
         await self.governor.set_status("idle")
-        
+
+        # MCP: connect to any configured active servers
+        try:
+            await self.mcp_bridge.connect_all()
+        except Exception as e:
+            logger.warning(f"MCP startup failed (non-fatal): {e}")
+
         # 1. RESTORED: Start Heartbeat
         self._bg_tasks.append(asyncio.create_task(self.heartbeat_loop()))
         
@@ -1453,7 +1463,7 @@ class GuppiDaemon:
                   orientation_data = {"time_asleep": delta, "missed_digests": missed}
                   self.last_social_sync_ts = now
             from tool_schemas import get_schemas_for_tier
-            tools = get_schemas_for_tier(is_flash)
+            tools = get_schemas_for_tier(is_flash, mcp_schemas=self.mcp_bridge.get_openai_schemas())
             context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data, native_tools=True)
 
             # [7.8.1] RETRY LOGIC WRAPPER
@@ -2128,6 +2138,16 @@ You were asleep for: {time_str}
                 await self.patch_abe_outcome(turn_id, result, notify=False)
                 return
 
+            elif tool == "reload_tools":
+                activate = action.get("activate")
+                deactivate = action.get("deactivate")
+                servers, tools_count = await self.mcp_bridge.reload(activate=activate, deactivate=deactivate)
+                result = {"status": "success", "servers": servers, "tools_discovered": tools_count}
+
+            elif self.mcp_bridge.has_tool(tool):
+                mcp_args = {k: v for k, v in action.items() if k != "tool"}
+                result = await self.mcp_bridge.call_tool(tool, mcp_args)
+
             else:
                 result = {"status": "error", "message": f"Unknown tool: {tool}"}
                 await self.patch_abe_outcome(turn_id, result)
@@ -2157,9 +2177,20 @@ You were asleep for: {time_str}
 
     def _tool_help(self, tool_name=None):
         from tool_schemas import TOOL_HELP
+        if tool_name == "mcp_tools":
+            return self.mcp_bridge.get_tool_help()
         if tool_name:
-            return TOOL_HELP.get(tool_name, "Unknown tool")
-        return TOOL_HELP
+            native = TOOL_HELP.get(tool_name)
+            if native:
+                return native
+            mcp = self.mcp_bridge.get_tool_help()
+            for server, info in mcp.items():
+                if tool_name in info.get("tools", {}):
+                    return info["tools"][tool_name]
+            return "Unknown tool"
+        merged = dict(TOOL_HELP)
+        merged["mcp_tools"] = "List all MCP server tools (active and inactive). Use reload_tools to activate/deactivate servers."
+        return merged
 
     async def _tool_todo_list(self, filter_mode):
         query = "SELECT * FROM tasks"
@@ -2449,6 +2480,8 @@ You were asleep for: {time_str}
         while self.running_subprocesses and time.time() < stop_deadline:
             await asyncio.sleep(0.1)
 
+        try: await self.mcp_bridge.disconnect_all()
+        except: pass
         async with self.log_lock: await self._rewrite_log_file()
         try: await self.r.close()
         except: pass
