@@ -1612,7 +1612,7 @@ class GuppiDaemon:
 
         # 3. Apply Qwen-specific sampling parameters
         if "qwen" in actual_model.lower():
-            payload["temperature"] = 0.6
+            payload["temperature"] = 1.0
             payload["top_p"] = 0.95
             payload["top_k"] = 20
             payload["min_p"] = 0.0
@@ -1624,6 +1624,7 @@ class GuppiDaemon:
         if is_pro and "openrouter" in base_url.lower():
             payload["reasoning"] = {"effort": "high"}
             payload["presence_penalty"] = 0.0
+            payload["temperature"] = 0.6
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
