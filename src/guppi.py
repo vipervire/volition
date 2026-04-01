@@ -737,6 +737,12 @@ class GuppiDaemon:
                 f"(What is different now compared to the start? New files? New constraints?)\n\n"
                 f"## Pending / Unresolved\n"
                 f"(Only list actual blockers or unfinished tasks that require future attention that WERE in the logs, Do not make assumptions.)\n\n"
+                f"After the sections above, append EXACTLY this metadata block (fill in values from the logs):\n\n"
+                f"<!-- TAGS\n"
+                f"outcome: <one of: success, failure, partial, neutral>\n"
+                f"services: <comma-separated list of services/systems touched, e.g.: nginx, redis, docker, python, git>\n"
+                f"problem: <one-line description of the core problem or task>\n"
+                f"-->\n\n"
                 f"Source log:\n{log_content}"
             )
             
@@ -2511,40 +2517,62 @@ You were asleep for: {time_str}
                     if key and val and key not in ("type",):  # 'type' set by caller
                         meta[f"fm_{key}"] = val
 
-        # 2. Heuristic outcome detection from body text
-        body_lower = text.lower()
-        if any(kw in body_lower for kw in ["error", "failed", "failure", "traceback", "permission denied", "crash"]):
-            meta["outcome"] = "failure"
-        elif any(kw in body_lower for kw in ["success", "completed", "resolved", "fixed", "working"]):
-            meta["outcome"] = "success"
-        else:
-            meta["outcome"] = "neutral"
+        # 2. Parse structured <!-- TAGS ... --> block (emitted by scribe summarize prompt)
+        tags_found = {}
+        tags_match = re.search(r'<!--\s*TAGS\s*\n(.*?)\n-->', text, re.DOTALL)
+        if tags_match:
+            for line in tags_match.group(1).splitlines():
+                if ':' in line:
+                    key, _, val = line.partition(':')
+                    key, val = key.strip().lower(), val.strip()
+                    if key and val:
+                        tags_found[key] = val
+            if "outcome" in tags_found:
+                meta["outcome"] = tags_found["outcome"].lower().split()[0]
+            if "services" in tags_found:
+                services = [s.strip() for s in tags_found["services"].split(",") if s.strip()]
+                if services:
+                    meta["topics"] = ",".join(sorted(set(services)))
+            if "problem" in tags_found:
+                meta["problem"] = tags_found["problem"]
 
-        # 3. Detect common service/topic keywords
-        service_patterns = [
-            (r'\b(nginx|apache|caddy|haproxy)\b', "web_server"),
-            (r'\b(postgres|mysql|mariadb|sqlite|redis|mongodb)\b', "database"),
-            (r'\b(docker|container|lxc|proxmox|podman)\b', "containers"),
-            (r'\b(systemd|systemctl|journalctl|service)\b', "systemd"),
-            (r'\b(ssh|sshd|openssh|authorized_keys)\b', "ssh"),
-            (r'\b(dns|bind|resolv|nameserver)\b', "dns"),
-            (r'\b(cert|tls|ssl|letsencrypt|acme)\b', "tls"),
-            (r'\b(git|github|gitlab|repo)\b', "git"),
-            (r'\b(cron|timer|schedule)\b', "scheduling"),
-            (r'\b(mount|fstab|disk|storage|zfs|lvm)\b', "storage"),
-            (r'\b(firewall|iptables|nftables|ufw)\b', "firewall"),
-            (r'\b(python|pip|venv|virtualenv)\b', "python"),
-            (r'\b(node|npm|yarn|javascript)\b', "nodejs"),
-        ]
-        topics = []
-        for pattern, label in service_patterns:
-            if re.search(pattern, body_lower):
-                topics.append(label)
-        if topics:
-            # ChromaDB metadata values must be str, so join
-            meta["topics"] = ",".join(sorted(set(topics)))
+        # 3. Heuristic outcome detection from body text (fallback when no TAGS block)
+        if "outcome" not in meta:
+            body_lower = text.lower()
+            if any(kw in body_lower for kw in ["error", "failed", "failure", "traceback", "permission denied", "crash"]):
+                meta["outcome"] = "failure"
+            elif any(kw in body_lower for kw in ["success", "completed", "resolved", "fixed", "working"]):
+                meta["outcome"] = "success"
+            else:
+                meta["outcome"] = "neutral"
 
-        # 4. Pick up any tags passed through the payload (from rag_ingest)
+        # 4. Detect common service/topic keywords (fallback when no TAGS block)
+        if "topics" not in meta:
+            body_lower = text.lower()
+            service_patterns = [
+                (r'\b(nginx|apache|caddy|haproxy)\b', "web_server"),
+                (r'\b(postgres|mysql|mariadb|sqlite|redis|mongodb)\b', "database"),
+                (r'\b(docker|container|lxc|proxmox|podman)\b', "containers"),
+                (r'\b(systemd|systemctl|journalctl|service)\b', "systemd"),
+                (r'\b(ssh|sshd|openssh|authorized_keys)\b', "ssh"),
+                (r'\b(dns|bind|resolv|nameserver)\b', "dns"),
+                (r'\b(cert|tls|ssl|letsencrypt|acme)\b', "tls"),
+                (r'\b(git|github|gitlab|repo)\b', "git"),
+                (r'\b(cron|timer|schedule)\b', "scheduling"),
+                (r'\b(mount|fstab|disk|storage|zfs|lvm)\b', "storage"),
+                (r'\b(firewall|iptables|nftables|ufw)\b', "firewall"),
+                (r'\b(python|pip|venv|virtualenv)\b', "python"),
+                (r'\b(node|npm|yarn|javascript)\b', "nodejs"),
+            ]
+            topics = []
+            for pattern, label in service_patterns:
+                if re.search(pattern, body_lower):
+                    topics.append(label)
+            if topics:
+                # ChromaDB metadata values must be str, so join
+                meta["topics"] = ",".join(sorted(set(topics)))
+
+        # 5. Pick up any tags passed through the payload (from rag_ingest)
         if payload:
             for key in ("tags", "topics", "outcome"):
                 val = payload.get(key)
