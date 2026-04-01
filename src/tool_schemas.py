@@ -378,6 +378,40 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_list",
+            "description": "Lists all available skills, their activation mode, tier, and whether they are currently active. Use this to discover skills you can activate or author.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_manage",
+            "description": "Activate, deactivate, or inspect a skill. Active skills inject extra instructions and tools into your think cycle. Use 'refresh' after writing a new skill file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["activate", "deactivate", "info", "refresh"],
+                        "description": "'activate'/'deactivate' a skill by name; 'info' to see full details; 'refresh' to rescan skill directories after writing a new skill file."
+                    },
+                    "skill_name": {
+                        "type": "string",
+                        "description": "Name of the skill (required for activate/deactivate/info)."
+                    }
+                },
+                "required": ["action"]
+            }
+        }
+    },
 ]
 
 # Tools the Flash (chat) tier is not allowed to execute.

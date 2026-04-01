@@ -64,6 +64,9 @@ DOWNLOADS_DIR = MEMORY_DIR / "downloads"
 # v7.2.1: Flight Recorder Log
 LOGS_DIR = ABE_ROOT / "logs"
 INBOX_DUMP_LOG = LOGS_DIR / "inbox_dump.jsonl"
+# Skill system
+SKILLS_DIR = ABE_ROOT / "skills"
+SYSTEM_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 # Network Config
 REDIS_HOST = os.environ.get("REDIS_HOST")
@@ -249,6 +252,18 @@ class GuppiDaemon:
         
         # [NEW] 7.8: Initialize Clipboard
         self.clipboard = Clipboard(ABE_ROOT / f".abe-clipboard-{self.abe_name}.md")
+
+        # Skill system
+        from skill_loader import SkillRegistry
+        self.skill_registry = SkillRegistry(SYSTEM_SKILLS_DIR, SKILLS_DIR)
+        self.skill_registry.scan()
+        self._skills_file = ABE_ROOT / ".abe-active-skills"
+        self.active_skill_set: set = set()
+        if self._skills_file.exists():
+            try:
+                self.active_skill_set = set(json.loads(self._skills_file.read_text()))
+            except Exception:
+                pass
         
         # v7.2: Dedicated Internal Queue for System Callbacks (Vectors/RPC)
         self.internal_queue = f"internal:{self.abe_name}"
@@ -365,7 +380,7 @@ class GuppiDaemon:
         logger.info(f"Identity Refreshed: {self.display_name}")
 
     def _init_fs(self):
-        for d in [BIN_DIR, DOCS_DIR, EPISODES_DIR, ARCHIVE_DIR, MEMORY_DIR, DOWNLOADS_DIR, LOGS_DIR]:
+        for d in [BIN_DIR, DOCS_DIR, EPISODES_DIR, ARCHIVE_DIR, MEMORY_DIR, DOWNLOADS_DIR, LOGS_DIR, SKILLS_DIR]:
             d.mkdir(parents=True, exist_ok=True)
         if not WORKING_LOG.exists(): WORKING_LOG.touch()
         if not COMM_LOG.exists(): COMM_LOG.touch()
@@ -1454,7 +1469,26 @@ class GuppiDaemon:
                   self.last_social_sync_ts = now
             from tool_schemas import get_schemas_for_tier
             tools = get_schemas_for_tier(is_flash)
-            context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data, native_tools=True)
+
+            # Skill activation: scan (checksum-gated), activate matching skills, merge tool schemas
+            self.skill_registry.scan()
+            active_skills = self.skill_registry.get_active_skills(
+                is_flash=is_flash,
+                context_text=json.dumps(event_data),
+                explicit_activations=self.active_skill_set
+            )
+            skill_tools = self.skill_registry.get_tool_schemas(active_skills)
+            # Filter Flash-forbidden skill tools
+            if is_flash:
+                skill_tools = [
+                    t for t in skill_tools
+                    if not self.skill_registry.get_skill(
+                        t["function"]["name"].split(":")[0]
+                    ).flash_forbidden
+                ]
+            tools = tools + skill_tools
+
+            context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data, native_tools=True, active_skills=active_skills)
 
             # [7.8.1] RETRY LOGIC WRAPPER
             try:
@@ -1743,7 +1777,7 @@ class GuppiDaemon:
             raise LLMOutputError(f"JSON Syntax Error: {str(e)}")
         
 
-    async def build_abe_context(self, current_event_data, system_notice=None, orientation_data=None, native_tools=False):
+    async def build_abe_context(self, current_event_data, system_notice=None, orientation_data=None, native_tools=False, active_skills=None):
         genesis = ""
         if GENESIS_PROMPT_FILE.exists():
             try: genesis = GENESIS_PROMPT_FILE.read_text()
@@ -1823,6 +1857,14 @@ You were asleep for: {time_str}
         clipboard_content = self.clipboard.read()
         clipboard_block = f"\n[ACTIVE_CLIPBOARD]\n(Persistent scratchpad. Use GUPPI tool 'manage_clipboard' to edit)\n{clipboard_content}\n"
 
+        # Skill prompt injection
+        skills_block = ""
+        if active_skills:
+            parts = []
+            for skill in active_skills:
+                parts.append(f"### Skill: {skill.name}\n{skill.prompt_text}")
+            skills_block = "\n[ACTIVE_SKILLS]\n" + "\n---\n".join(parts) + "\n"
+
         # Assemble Prompt
         return f"""
 {genesis}
@@ -1835,6 +1877,7 @@ You were asleep for: {time_str}
 [TIER_2_MEMORY_EPISODES]
 {summaries}
 {clipboard_block}
+{skills_block}
 {orientation_block}
 {recent_log_block}
 [CURRENTLY_DUE_TASKS]
@@ -2127,6 +2170,59 @@ You were asleep for: {time_str}
                 result["status"] = "hibernating"
                 await self.patch_abe_outcome(turn_id, result, notify=False)
                 return
+
+            # --- SKILL MANAGEMENT TOOLS ---
+            elif tool == "skill_list":
+                result = {
+                    "skills": self.skill_registry.list_skills(),
+                    "active": sorted(self.active_skill_set)
+                }
+
+            elif tool == "skill_manage":
+                sub = action.get("action")
+                sname = action.get("skill_name", "")
+                if sub == "activate" and sname:
+                    if self.skill_registry.get_skill(sname):
+                        self.active_skill_set.add(sname)
+                        self._skills_file.write_text(json.dumps(sorted(self.active_skill_set)))
+                        result = {"status": "activated", "skill": sname}
+                    else:
+                        result = {"status": "error", "message": f"Skill '{sname}' not found. Use skill_list to see available skills, or skill_manage with action 'refresh' after writing a new skill file."}
+                elif sub == "deactivate" and sname:
+                    self.active_skill_set.discard(sname)
+                    self._skills_file.write_text(json.dumps(sorted(self.active_skill_set)))
+                    result = {"status": "deactivated", "skill": sname}
+                elif sub == "info" and sname:
+                    s = self.skill_registry.get_skill(sname)
+                    if s:
+                        result = {
+                            "name": s.name, "description": s.description,
+                            "tier": s.tier, "activation": s.activation_mode,
+                            "keywords": s.keywords, "flash_forbidden": s.flash_forbidden,
+                            "tools": [t.get("name") for t in s.tools],
+                            "prompt_preview": s.prompt_text[:500],
+                            "source": str(s.source_path)
+                        }
+                    else:
+                        result = {"status": "error", "message": f"Skill '{sname}' not found"}
+                elif sub == "refresh":
+                    count = self.skill_registry.scan(force=True)
+                    result = {"status": "refreshed", "skills_loaded": count}
+                else:
+                    result = {"status": "error", "message": "Invalid action or missing skill_name"}
+
+            # --- NAMESPACED SKILL TOOLS (skillname:toolname) ---
+            elif ":" in tool:
+                skill_name, tool_name = tool.split(":", 1)
+                cmd = self.skill_registry.execute_skill_tool(
+                    skill_name, tool_name,
+                    {k: v for k, v in action.items() if k != "tool"}
+                )
+                if cmd is not None:
+                    await self._spawn_subprocess_exec(turn_id, cmd, tracked=True)
+                    return
+                else:
+                    result = {"status": "error", "message": f"Skill tool '{tool}' not found or not a shell handler"}
 
             else:
                 result = {"status": "error", "message": f"Unknown tool: {tool}"}
