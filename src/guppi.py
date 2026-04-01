@@ -1552,12 +1552,18 @@ class GuppiDaemon:
                 try: await self.r.lpush(f"inbox:{self.abe_name}", json.dumps(alert))
                 except: pass
 
-    async def call_abe_api(self, prompt_text: str, model_id: str = GEMINI_MODEL, tools=None) -> Dict:
+    async def call_abe_api(self, prompt_text, model_id: str = GEMINI_MODEL, tools=None) -> Dict:
         # Everything routes through the OpenAI-compatible endpoint now
         is_pro = (model_id == MODEL_PRO)
         return await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro, tools=tools)
 
     async def _call_openai_compat(self, model_id, prompt, is_pro=False, tools=None):
+        # Support (system, user) tuple for prompt caching via system message prefix
+        if isinstance(prompt, tuple):
+            system_content, user_content = prompt
+        else:
+            system_content, user_content = None, prompt
+
         # 1. Detect Thinking Intent
         use_thinking = ":thinking" in model_id
         if use_thinking: 
@@ -1602,12 +1608,14 @@ class GuppiDaemon:
         except:
             target_top_k = 40
 
+        messages = []
+        if system_content:
+            messages.append({"role": "system", "content": system_content})
+        messages.append({"role": "user", "content": user_content})
+
         payload = {
             "model": actual_model,
-            "messages": [
-                #{"role": "system", "content": "Be concise. Do not repeat information from the user's message. Avoid preamble, filler phrases, and summaries."},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "temperature": target_temp,
             "top_p": target_top_p,
             "top_k": target_top_k
@@ -1650,6 +1658,7 @@ class GuppiDaemon:
                     try:
                         ctx_limit = CONTEXT_LIMITS.get(actual_model, DEFAULT_CONTEXT_LIMIT)
                         total = usage.get("total_tokens", 0) or 0
+                        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
                         await self.r.xadd("volition:token_usage", {
                             "source": "guppi",
                             "agent": self.abe_name,
@@ -1657,6 +1666,7 @@ class GuppiDaemon:
                             "prompt_tokens": str(usage.get("prompt_tokens", 0) or 0),
                             "completion_tokens": str(usage.get("completion_tokens", 0) or 0),
                             "total_tokens": str(total),
+                            "cached_tokens": str(cached),
                             "context_limit": str(ctx_limit),
                             "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
                             "ts": datetime.utcnow().isoformat()
@@ -1938,14 +1948,14 @@ You were asleep for: {time_str}
         clipboard_content = self.clipboard.read()
         clipboard_block = f"\n[ACTIVE_CLIPBOARD]\n(Persistent scratchpad. Use GUPPI tool 'manage_clipboard' to edit)\n{clipboard_content}\n"
 
-        # Assemble Prompt
-        return f"""
-{genesis}
+        # Assemble Prompt — split into system (static/cacheable) and user (dynamic) messages
+        system_prompt = f"""{genesis}
 {priors}
 {protocol_block}
 [IDENTITY_PASSPORT]
-{json.dumps(self.identity, indent=2)}
-[TODAY'S CHANGELOG (Latest Entries)] 
+{json.dumps(self.identity, indent=2)}"""
+
+        user_prompt = f"""[TODAY'S CHANGELOG (Latest Entries)]
 {daily_log}
 [TIER_2_MEMORY_EPISODES]
 {summaries}
@@ -1958,6 +1968,8 @@ You were asleep for: {time_str}
 [CURRENT_EVENT]
 {json.dumps(current_event_data, indent=2)}
 """
+
+        return (system_prompt, user_prompt)
 
     # --- ACTIONS (Standard v7.2.3 Toolset) ---
 
