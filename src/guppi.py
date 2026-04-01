@@ -1705,24 +1705,30 @@ class GuppiDaemon:
 
                 # 5. Inline JSON fallback: some models dump tool calls as text content
                 #    (e.g. Ollama, older llama.cpp builds). Detect and normalize.
-                if tools and text:
-                    stripped = text.strip()
+                #    Check both `text` and `reasoning` — some models stuff the tool
+                #    call JSON inside <think> tags, leaving `text` empty after stripping.
+                for candidate in ([text] if text else []) + ([reasoning] if tools and reasoning and not text else []):
+                    stripped = candidate.strip()
                     if stripped.startswith("```json"):
                         stripped = stripped[7:].rstrip("`").strip()
                     elif stripped.startswith("```"):
                         stripped = stripped[3:].rstrip("`").strip()
-                    try:
-                        parsed_content = json.loads(stripped)
-                        if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
-                            logger.info("Intercepted inline JSON tool call. Normalizing.")
-                            args = parsed_content["arguments"] if isinstance(parsed_content["arguments"], dict) else json.loads(parsed_content["arguments"])
-                            args["tool"] = parsed_content["name"]
-                            return {"reasoning": reasoning, "action": args}
-                    except Exception:
-                        pass
+                    # Extract the last JSON object — reasoning may contain prose before the tool call
+                    json_objects = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', stripped))
+                    candidates = [json_objects[-1].group(0)] if json_objects else [stripped]
+                    for json_str in candidates:
+                        try:
+                            parsed_content = json.loads(json_str)
+                            if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
+                                logger.info("Intercepted inline JSON tool call. Normalizing.")
+                                args = parsed_content["arguments"] if isinstance(parsed_content["arguments"], dict) else json.loads(parsed_content["arguments"])
+                                args["tool"] = parsed_content["name"]
+                                return {"reasoning": reasoning, "action": args}
+                        except Exception:
+                            pass
 
                 # 6. Legacy JSON path (no tools passed, or fallback)
-                return self._clean_json(text, thought_sig=None)
+                return self._clean_json(text or reasoning, thought_sig=None)
 
 
     def _clean_json(self, text_response, thought_sig=None):
