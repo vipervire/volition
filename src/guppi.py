@@ -1606,7 +1606,7 @@ class GuppiDaemon:
 
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "required"
+            payload["tool_choice"] = "auto"
         else:
             payload["response_format"] = {"type": "json_object"}
 
