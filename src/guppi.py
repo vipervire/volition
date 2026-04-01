@@ -1471,14 +1471,20 @@ class GuppiDaemon:
                     )
                     
                     # RECURSIVE CALL: Force MODEL_PRO to fix the mess
-                    return await self.run_think_cycle(
-                        event_data, 
-                        parent_evt_id, 
-                        force_model=MODEL_PRO, 
-                        system_notice=repair_notice, 
+                    # NOTE: Do NOT use `return await` here. That exits the outer try block
+                    # before cycle_success is set, causing the deadman switch to fire a
+                    # false ghost alert. Await the recursive call, then set cycle_success
+                    # and return — matching the escalation pattern at lines 1504-1508.
+                    await self.run_think_cycle(
+                        event_data,
+                        parent_evt_id,
+                        force_model=MODEL_PRO,
+                        system_notice=repair_notice,
                         orientation_data=orientation_data,
                         retry_count=retry_count + 1
                     )
+                    cycle_success = True
+                    return
                 else:
                     # We failed twice. Stop the bleeding.
                     logger.error(f"❌ JSON Repair failed after retry. Giving up.")
