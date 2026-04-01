@@ -237,6 +237,8 @@ class Governor:
 
 
 class GuppiDaemon:
+    DEDUP_L2_THRESHOLD = 0.30  # ~0.85 cosine similarity for normalized embeddings
+
     def __init__(self):
         # 1. Identity
         self._refresh_identity()
@@ -2498,6 +2500,35 @@ You were asleep for: {time_str}
             )
         return self.chroma_client.get_or_create_collection("tier3_memory")
 
+    def _find_semantic_duplicate(self, collection, embedding: List[float], exclude_id: Optional[str] = None) -> Optional[Dict]:
+        """Query ChromaDB for the nearest existing vector. Returns match info if within DEDUP_L2_THRESHOLD.
+
+        Called synchronously from within asyncio.to_thread. No GPU calls — uses the embedding already in hand.
+        """
+        try:
+            if collection.count() == 0:
+                return None
+            results = collection.query(
+                query_embeddings=[embedding],
+                n_results=1,
+                include=["metadatas", "distances"]
+            )
+            if not results or not results.get("ids") or not results["ids"][0]:
+                return None
+            match_id = results["ids"][0][0]
+            distance = results["distances"][0][0]
+            if exclude_id and match_id == exclude_id:
+                return None
+            if distance <= self.DEDUP_L2_THRESHOLD:
+                return {
+                    "id": match_id,
+                    "distance": distance,
+                    "metadata": results["metadatas"][0][0] if results.get("metadatas") else {}
+                }
+        except Exception as e:
+            logger.warning(f"Dedup check failed (non-fatal): {e}")
+        return None
+
     @staticmethod
     def _extract_episode_metadata(text: str, payload: Optional[Dict] = None) -> Dict:
         """Parse YAML frontmatter and scan content for structured metadata tags.
@@ -2702,28 +2733,49 @@ You were asleep for: {time_str}
                 return False
 
             text_body = ep_path.read_text(encoding="utf-8")
+            now_iso = datetime.utcnow().isoformat()
             meta = {
                 "source": ep_filename,
-                "ingested_at": datetime.utcnow().isoformat(),
+                "ingested_at": now_iso,
                 "type": doc_type
             }
 
             # Extract structured metadata from YAML frontmatter and content
             meta.update(self._extract_episode_metadata(text_body, result_payload))
 
+            # Derive created_at from episode frontmatter timestamp if available
+            meta["created_at"] = meta.get("fm_generated_at", now_iso)
+
+            force_new = result_payload.get("force_new", False)
+
             def _insert_sync():
                 collection = self._ensure_chroma()
+                upsert_id = task_id
+
+                if not force_new:
+                    dup = self._find_semantic_duplicate(collection, vector, exclude_id=task_id)
+                    if dup:
+                        upsert_id = dup["id"]
+                        # Preserve original ingested_at; record update provenance
+                        meta["ingested_at"] = dup["metadata"].get("ingested_at", now_iso)
+                        meta["updated_at"] = now_iso
+                        meta["supersedes"] = task_id
+                        logger.info(
+                            f"Dedup: updating existing doc '{upsert_id}' "
+                            f"(L2={dup['distance']:.4f}) instead of inserting '{task_id}'"
+                        )
+
                 try:
                     collection.upsert(
-                        ids=[task_id],
+                        ids=[upsert_id],
                         embeddings=[vector],
                         documents=[text_body],
                         metadatas=[meta]
                     )
                 except Exception as e:
-                    logger.error(f"Vector insert failed for {task_id}: {e}", exc_info=True)
+                    logger.error(f"Vector insert failed for {upsert_id}: {e}", exc_info=True)
                     raise
-                
+
             await asyncio.to_thread(_insert_sync)
             logger.info(f"Successfully stored vector for {ep_filename} in Tier 3 Memory.")
             return True
@@ -2739,6 +2791,7 @@ You were asleep for: {time_str}
         content = action.get("content", "")
         doc_id = action.get("doc_id", "")
         tags = action.get("tags", "")  # comma-separated topic tags
+        force_new = action.get("force_new", False)
 
         if file_path:
             p = Path(os.path.expanduser(file_path))
@@ -2774,6 +2827,8 @@ You were asleep for: {time_str}
         # Pass user-supplied tags through the payload so _handle_vector_result stores them
         if tags:
             task_payload["tags"] = tags
+        if force_new:
+            task_payload["force_new"] = True
         await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
         logger.info(f"RAG ingest offloaded: {doc_id} ({len(content)} chars)")
 
@@ -2813,11 +2868,14 @@ You were asleep for: {time_str}
                     if m.get("type"):
                         types.add(m["type"])
 
+                created_dates = [m["created_at"] for m in metadatas if m.get("created_at")]
                 result["filterable_fields"] = {
                     "outcome": sorted(outcomes),
                     "topics": sorted(topics),
                     "type": sorted(types)
                 }
+                if created_dates:
+                    result["date_range"] = {"earliest": min(created_dates), "latest": max(created_dates)}
 
                 # Peek at a few recent entries
                 peek = collection.peek(limit=min(5, count))

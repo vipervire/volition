@@ -131,7 +131,7 @@ TOOL_SCHEMAS = [
                     "n_results": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max results to return (default 5)."},
                     "filter": {
                         "type": "object",
-                        "description": "ChromaDB metadata filter. Examples: {\"outcome\": \"failure\"}, {\"topics\": {\"$contains\": \"storage\"}}, {\"$and\": [{\"outcome\": \"success\"}, {\"type\": \"tier_2_episode\"}]}. Available fields: outcome (success/failure/neutral), topics (comma-separated: storage,systemd,...), type (tier_2_episode/manual_ingest), source, fm_generated_at."
+                        "description": "ChromaDB metadata filter. Examples: {\"outcome\": \"failure\"}, {\"topics\": {\"$contains\": \"storage\"}}, {\"created_at\": {\"$gte\": \"2026-01-01\"}}, {\"$and\": [{\"created_at\": {\"$gte\": \"2026-01-01\"}}, {\"created_at\": {\"$lte\": \"2026-03-31\"}}]}, {\"$and\": [{\"outcome\": \"success\"}, {\"type\": \"tier_2_episode\"}]}. Available fields: outcome (success/failure/partial/neutral), topics ($contains for substring: storage,systemd,database,...), type (tier_2_episode/manual_ingest), source, created_at (ISO timestamp, $gte/$lte for date ranges), ingested_at, updated_at (only on dedup-updated docs)."
                     }
                 },
                 "required": ["query"]
@@ -149,7 +149,8 @@ TOOL_SCHEMAS = [
                     "file_path": {"type": "string", "description": "Path to a file to ingest (~ is expanded). Mutually exclusive with content."},
                     "content": {"type": "string", "description": "Inline text content to ingest. Use when no file exists on disk."},
                     "doc_id": {"type": "string", "description": "Optional custom document ID. Auto-generated if omitted."},
-                    "tags": {"type": "string", "description": "Comma-separated topic tags to attach (e.g. 'storage,systemd,nginx'). Merged with auto-detected topics."}
+                    "tags": {"type": "string", "description": "Comma-separated topic tags to attach (e.g. 'storage,systemd,nginx'). Merged with auto-detected topics."},
+                    "force_new": {"type": "boolean", "description": "If true, skip deduplication and always create a new vector entry even if similar content exists. Default false."}
                 },
                 "required": []
             }
