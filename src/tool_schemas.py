@@ -40,7 +40,7 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "host": {"type": "string", "description": "Hostname to SSH into (e.g. slv-wdym-buffering)."},
+                    "host": {"type": "string", "description": "Hostname to SSH into."},
                     "command": {"type": "string", "description": "Shell command to run on the remote host."}
                 },
                 "required": ["host", "command"]
