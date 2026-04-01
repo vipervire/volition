@@ -1721,6 +1721,15 @@ class GuppiDaemon:
                     except Exception:
                         pass
 
+                # 5b. XML tool-call fallback: some models trained on XML tool-use
+                #     formats emit <tool_call>, <function_call>, or <invoke> XML
+                #     instead of JSON. Parse and normalize.
+                if tools and text:
+                    xml_result = self._parse_xml_tool_call(text)
+                    if xml_result:
+                        logger.info("Intercepted XML tool call. Normalizing.")
+                        return {"reasoning": reasoning, "action": xml_result}
+
                 # 6. Legacy JSON path (no tools passed, or fallback)
                 return self._clean_json(text, thought_sig=None)
 
@@ -1751,6 +1760,95 @@ class GuppiDaemon:
             logger.error(f"JSON Parse Failed. Raising LLMOutputError.")
             raise LLMOutputError(f"JSON Syntax Error: {str(e)}")
         
+
+    def _parse_xml_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse XML-formatted tool calls from LLMs that emit XML instead of JSON.
+
+        Supports common XML tool-use formats:
+          <tool_call><name>...</name><arguments>...</arguments></tool_call>
+          <function_call><name>...</name><parameters>...</parameters></function_call>
+          <invoke name="..."><parameter name="k">v</parameter>...</invoke>
+        """
+        # Pattern 1: <tool_call> or <function_call> wrappers
+        for wrapper_tag in ("tool_call", "function_call"):
+            wrapper_match = re.search(
+                rf'<{wrapper_tag}>(.*?)</{wrapper_tag}>', text, re.DOTALL
+            )
+            if not wrapper_match:
+                continue
+            inner = wrapper_match.group(1)
+            name_match = re.search(r'<name>\s*(.*?)\s*</name>', inner, re.DOTALL)
+            if not name_match:
+                continue
+            tool_name = name_match.group(1).strip()
+            # Try <arguments> first, then <parameters>
+            args_match = (
+                re.search(r'<arguments>\s*(.*?)\s*</arguments>', inner, re.DOTALL)
+                or re.search(r'<parameters>\s*(.*?)\s*</parameters>', inner, re.DOTALL)
+            )
+            if args_match:
+                raw_args = args_match.group(1).strip()
+                try:
+                    args = json.loads(raw_args)
+                    if isinstance(args, dict):
+                        args["tool"] = tool_name
+                        return args
+                except json.JSONDecodeError:
+                    pass
+                # Fallback: args may be XML key-value pairs inside <arguments>
+                kv_args = self._parse_xml_kv_pairs(raw_args)
+                if kv_args is not None:
+                    kv_args["tool"] = tool_name
+                    return kv_args
+            # No arguments tag — try parsing child elements as key-value pairs
+            # (exclude the <name> tag itself)
+            remaining = re.sub(r'<name>.*?</name>', '', inner, flags=re.DOTALL).strip()
+            if remaining:
+                kv_args = self._parse_xml_kv_pairs(remaining)
+                if kv_args is not None:
+                    kv_args["tool"] = tool_name
+                    return kv_args
+            # Tool with no arguments
+            return {"tool": tool_name}
+
+        # Pattern 2: <invoke name="tool_name"><parameter name="k">v</parameter>...</invoke>
+        invoke_match = re.search(
+            r'<invoke\s+name=["\']([^"\']+)["\']\s*>(.*?)</invoke>', text, re.DOTALL
+        )
+        if invoke_match:
+            tool_name = invoke_match.group(1).strip()
+            params_block = invoke_match.group(2)
+            param_pairs = re.findall(
+                r'<parameter\s+name=["\']([^"\']+)["\']>\s*(.*?)\s*</parameter>',
+                params_block, re.DOTALL
+            )
+            if param_pairs:
+                args = {}
+                for k, v in param_pairs:
+                    # Try to parse values as JSON for proper typing (bools, numbers, etc.)
+                    try:
+                        args[k] = json.loads(v)
+                    except (json.JSONDecodeError, ValueError):
+                        args[k] = v
+                args["tool"] = tool_name
+                return args
+            return {"tool": tool_name}
+
+        return None
+
+    @staticmethod
+    def _parse_xml_kv_pairs(xml_fragment: str) -> Optional[Dict[str, Any]]:
+        """Extract key-value pairs from XML elements like <key>value</key>."""
+        pairs = re.findall(r'<(\w+)>\s*(.*?)\s*</\1>', xml_fragment, re.DOTALL)
+        if not pairs:
+            return None
+        result = {}
+        for k, v in pairs:
+            try:
+                result[k] = json.loads(v)
+            except (json.JSONDecodeError, ValueError):
+                result[k] = v
+        return result
 
     async def build_abe_context(self, current_event_data, system_notice=None, orientation_data=None, native_tools=False):
         genesis = ""
