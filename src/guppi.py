@@ -107,6 +107,8 @@ DEFAULT_LOCK_TTL_MS = 60000
 
 # Safety
 STREAM_DENY_LIST = ["volition:action_log", "volition:heartbeat", "volition:log_stream", "volition:token_usage"]
+HEARTBEAT_STALE_THRESHOLD = 180   # seconds; matches heartbeat-monitor.py
+ACTIVE_ABES_CACHE_TTL = 120       # seconds
 
 CONTEXT_LIMITS = {
     "google/gemini-3-flash-preview": 1_048_576,
@@ -268,6 +270,8 @@ class GuppiDaemon:
         self._bg_tasks: List[asyncio.Task] = []
         self._is_pruning = False
         self._last_prune_time: float = 0.0
+        self._active_abes_cache: Dict[str, float] = {}
+        self._active_abes_cache_ts: float = 0.0
 
         self.processed_triggers = {}
         self.processed_triggers_ttl = 90
@@ -671,6 +675,44 @@ class GuppiDaemon:
             norm["derived"]["inferred"] = True
             
         return norm
+
+    async def _get_active_abes(self) -> set:
+        """Returns the set of abe names that have sent a heartbeat recently."""
+        now = time.time()
+        if now - self._active_abes_cache_ts < ACTIVE_ABES_CACHE_TTL:
+            return set(self._active_abes_cache.keys())
+        entries = await self.r.xrevrange("volition:heartbeat", count=50)
+        fresh = {}
+        for _entry_id, fields in entries:
+            abe = fields.get("abe")
+            ts_str = fields.get("ts")
+            if not abe or not ts_str:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str).replace(tzinfo=None).timestamp()
+            except Exception:
+                continue
+            if now - ts <= HEARTBEAT_STALE_THRESHOLD:
+                if abe not in fresh:
+                    fresh[abe] = ts
+        self._active_abes_cache = fresh
+        self._active_abes_cache_ts = now
+        return set(fresh.keys())
+
+    async def _send_email_bounce(self, original_recipient: str, original_message: str, active_abes: set):
+        """Pushes a non-delivery bounce back to this Abe's own inbox."""
+        active_list = ", ".join(sorted(active_abes)) or "none detected"
+        bounce = {
+            "from": "GUPPI",
+            "event_type": "EmailBounce",
+            "content": (
+                f"Undeliverable: recipient '{original_recipient}' is not an active Fleet member. "
+                f"Active members: {active_list}. The message was delivered to an invalid inbox."
+            ),
+            "original_recipient": original_recipient,
+            "original_message_preview": original_message[:200] if original_message else "",
+        }
+        await retry_async(self.r.lpush, f"inbox:{self.abe_name}", json.dumps(bounce))
 
     def _archive_inbox_message(self, norm: Dict):
         """Archives human communications to communications.log (The Mbox). Ignores System Noise."""
@@ -2203,9 +2245,18 @@ You were asleep for: {time_str}
                 target = action.get("recipient")
                 if target and not target.startswith("inbox:"):
                     target = f"inbox:{target}"
+                target_abe = target.replace("inbox:", "") if target else None
+                # Human inboxes (any name starting with "Human-") and self-sends are always valid
+                is_human = target_abe and target_abe.lower().startswith("human-")
+                is_self = target_abe == self.abe_name
                 msg = {"from": self.display_name, "event_type": "NewInboxMessage", "content": action.get("message")}
                 await retry_async(self.r.lpush, target, json.dumps(msg))
                 result["recipient"] = target
+                if not is_human and not is_self:
+                    active_abes = await self._get_active_abes()
+                    if target_abe not in active_abes:
+                        await self._send_email_bounce(target_abe, action.get("message", ""), active_abes)
+                        result["note"] = f"Recipient '{target_abe}' is not an active Fleet member; message delivered but bounce sent."
 
             elif tool == "chat_post":
                 channel = action.get("channel", "chat:general")
