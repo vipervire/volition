@@ -1674,10 +1674,9 @@ class GuppiDaemon:
 
                 # 2. Fallback: If the model stuffed <think> tags into the main content block
                 if not reasoning and "<think>" in text:
-                    think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
-                    if think_match:
-                        reasoning = think_match.group(1).strip()
-                        # Strip the thinking block from the main text so we only parse the JSON
+                    think_blocks = re.findall(r'<think>(.*?)</think>', text, re.DOTALL)
+                    if think_blocks:
+                        reasoning = "\n".join(block.strip() for block in think_blocks)
                         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
                 # 3. Offload the internal monologue to a forensic log (Chunked by Date)
