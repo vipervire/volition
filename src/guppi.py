@@ -1674,10 +1674,9 @@ class GuppiDaemon:
 
                 # 2. Fallback: If the model stuffed <think> tags into the main content block
                 if not reasoning and "<think>" in text:
-                    think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
-                    if think_match:
-                        reasoning = think_match.group(1).strip()
-                        # Strip the thinking block from the main text so we only parse the JSON
+                    think_blocks = re.findall(r'<think>(.*?)</think>', text, re.DOTALL)
+                    if think_blocks:
+                        reasoning = "\n".join(block.strip() for block in think_blocks)
                         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
                 # 3. Offload the internal monologue to a forensic log (Chunked by Date)
@@ -1705,24 +1704,30 @@ class GuppiDaemon:
 
                 # 5. Inline JSON fallback: some models dump tool calls as text content
                 #    (e.g. Ollama, older llama.cpp builds). Detect and normalize.
-                if tools and text:
-                    stripped = text.strip()
+                #    Check both `text` and `reasoning` — some models stuff the tool
+                #    call JSON inside <think> tags, leaving `text` empty after stripping.
+                for candidate in ([text] if text else []) + ([reasoning] if tools and reasoning and not text else []):
+                    stripped = candidate.strip()
                     if stripped.startswith("```json"):
                         stripped = stripped[7:].rstrip("`").strip()
                     elif stripped.startswith("```"):
                         stripped = stripped[3:].rstrip("`").strip()
-                    try:
-                        parsed_content = json.loads(stripped)
-                        if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
-                            logger.info("Intercepted inline JSON tool call. Normalizing.")
-                            args = parsed_content["arguments"] if isinstance(parsed_content["arguments"], dict) else json.loads(parsed_content["arguments"])
-                            args["tool"] = parsed_content["name"]
-                            return {"reasoning": reasoning, "action": args}
-                    except Exception:
-                        pass
+                    # Extract the last JSON object — reasoning may contain prose before the tool call
+                    json_objects = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', stripped))
+                    candidates = [json_objects[-1].group(0)] if json_objects else [stripped]
+                    for json_str in candidates:
+                        try:
+                            parsed_content = json.loads(json_str)
+                            if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
+                                logger.info("Intercepted inline JSON tool call. Normalizing.")
+                                args = parsed_content["arguments"] if isinstance(parsed_content["arguments"], dict) else json.loads(parsed_content["arguments"])
+                                args["tool"] = parsed_content["name"]
+                                return {"reasoning": reasoning, "action": args}
+                        except Exception:
+                            pass
 
                 # 6. Legacy JSON path (no tools passed, or fallback)
-                return self._clean_json(text, thought_sig=None)
+                return self._clean_json(text or reasoning, thought_sig=None)
 
 
     def _clean_json(self, text_response, thought_sig=None):
