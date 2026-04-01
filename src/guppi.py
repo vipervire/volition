@@ -2129,6 +2129,13 @@ You were asleep for: {time_str}
             elif tool == "rag_status":
                 result = await self._tool_rag_status()
 
+            elif tool == "rag_reindex":
+                confirm = action.get("confirm", False)
+                if not confirm:
+                    result = {"status": "blocked", "message": "This will DELETE the entire vector DB and re-embed all episodes. Pass confirm=true to proceed."}
+                else:
+                    result = await self._tool_rag_reindex()
+
             elif tool == "todo_list":
                 result = await self._tool_todo_list(action.get("filter", "due"))
 
@@ -2782,6 +2789,57 @@ You were asleep for: {time_str}
             return await asyncio.to_thread(_status_sync)
         except Exception as e:
             logger.error(f"RAG status check failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def _tool_rag_reindex(self) -> Dict:
+        """Wipe the vector DB and re-queue all episodes for fresh embedding."""
+        try:
+            # 1. Delete the collection (blocking)
+            def _wipe_sync():
+                collection = self._ensure_chroma()
+                old_count = collection.count()
+                self.chroma_client.delete_collection("tier3_memory")
+                return old_count
+
+            old_count = await asyncio.to_thread(_wipe_sync)
+            # Force re-creation on next access
+            self.chroma_client = None
+            logger.info(f"RAG reindex: wiped {old_count} documents from tier3_memory.")
+
+            # 2. Find all episode files (ep-*.md + manually ingested .md)
+            if not EPISODES_DIR.exists():
+                return {"status": "ok", "wiped": old_count, "queued": 0, "note": "No episodes directory found."}
+
+            all_episodes = sorted(EPISODES_DIR.glob("*.md"))
+            queued = 0
+            for ep_path in all_episodes:
+                content = ep_path.read_text(encoding="utf-8")
+                if not content.strip():
+                    continue
+
+                stem = ep_path.stem
+                # Use consistent ID derivation: ep-abc.md -> vec-abc, other.md -> vec-other
+                if stem.startswith("ep-"):
+                    vec_id = f"vec-{stem.replace('ep-', '')}"
+                else:
+                    vec_id = f"vec-{stem}"
+
+                await retry_async(self.r.set, f"vec_meta:{vec_id}", str(ep_path.resolve()), ex=7200)
+                task_payload = {
+                    "task_id": vec_id,
+                    "type": "embed",
+                    "content": content,
+                    "reply_to": self.internal_queue
+                }
+                await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
+                queued += 1
+
+            logger.info(f"RAG reindex: queued {queued} documents for re-embedding.")
+            return {"status": "ok", "wiped": old_count, "queued": queued,
+                    "note": "All documents sent to GPU worker for fresh embedding. This runs in the background."}
+
+        except Exception as e:
+            logger.error(f"RAG reindex failed: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
 
     async def _bootstrap_vector_db(self):

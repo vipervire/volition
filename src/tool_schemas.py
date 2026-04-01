@@ -170,6 +170,20 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "rag_reindex",
+            "description": "DESTRUCTIVE: Wipes the entire Tier 3 VectorDB and re-embeds all episode files from scratch. Use after changing embedding models, fixing corrupted vectors, or clearing placeholder data. Requires confirm=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirm": {"type": "boolean", "description": "Must be true to proceed. Safety guard against accidental wipes."}
+                },
+                "required": ["confirm"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_search",
             "description": "Searches the internet via the internal SearXNG instance. Returns titles, URLs, and snippets.",
             "parameters": {
