@@ -123,12 +123,16 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "rag_search",
-            "description": "Searches your Tier 3 VectorDB semantic memory. Returns matching Tier 2 episode summaries ranked by relevance.",
+            "description": "Searches your Tier 3 VectorDB semantic memory. Returns matching Tier 2 episode summaries ranked by relevance. Use 'filter' to narrow results by metadata (outcome, topics, type).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural language search query."},
-                    "n_results": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max results to return (default 5)."}
+                    "n_results": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max results to return (default 5)."},
+                    "filter": {
+                        "type": "object",
+                        "description": "ChromaDB metadata filter. Examples: {\"outcome\": \"failure\"}, {\"topics\": {\"$contains\": \"storage\"}}, {\"$and\": [{\"outcome\": \"success\"}, {\"type\": \"tier_2_episode\"}]}. Available fields: outcome (success/failure/neutral), topics (comma-separated: storage,systemd,...), type (tier_2_episode/manual_ingest), source, fm_generated_at."
+                    }
                 },
                 "required": ["query"]
             }
@@ -138,13 +142,14 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "rag_ingest",
-            "description": "Manually ingests a document into your Tier 3 VectorDB. Provide a file_path to index an existing file, or content for inline text. The document is sent to the GPU worker for embedding and stored in ChromaDB.",
+            "description": "Manually ingests a document into your Tier 3 VectorDB. Provide a file_path to index an existing file, or content for inline text. The document is sent to the GPU worker for embedding and stored in ChromaDB. Metadata (outcome, topics) is auto-extracted from content.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string", "description": "Path to a file to ingest (~ is expanded). Mutually exclusive with content."},
                     "content": {"type": "string", "description": "Inline text content to ingest. Use when no file exists on disk."},
-                    "doc_id": {"type": "string", "description": "Optional custom document ID. Auto-generated if omitted."}
+                    "doc_id": {"type": "string", "description": "Optional custom document ID. Auto-generated if omitted."},
+                    "tags": {"type": "string", "description": "Comma-separated topic tags to attach (e.g. 'storage,systemd,nginx'). Merged with auto-detected topics."}
                 },
                 "required": []
             }

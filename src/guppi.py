@@ -2119,7 +2119,8 @@ You were asleep for: {time_str}
             elif tool == "rag_search":
                 query = action.get("query")
                 n = action.get("n_results", 5)
-                matches = await self._query_vector_db(query, n_results=n)
+                where = action.get("filter")
+                matches = await self._query_vector_db(query, n_results=n, where=where)
                 result = {"matches": matches}
 
             elif tool == "rag_ingest":
@@ -2472,8 +2473,76 @@ You were asleep for: {time_str}
             )
         return self.chroma_client.get_or_create_collection("tier3_memory")
 
-    async def _query_vector_db(self, query: str, n_results: int = 5):
-        """Semantic search over Tier 3 memory using GPU-worker embeddings + ChromaDB."""
+    @staticmethod
+    def _extract_episode_metadata(text: str, payload: Optional[Dict] = None) -> Dict:
+        """Parse YAML frontmatter and scan content for structured metadata tags.
+
+        Returns a flat dict of string values suitable for ChromaDB metadata
+        (ChromaDB only supports str/int/float/bool in metadata values).
+        """
+        meta = {}
+
+        # 1. Parse YAML frontmatter (between --- delimiters)
+        fm_match = re.match(r'^---\s*\n(.*?)\n---', text, re.DOTALL)
+        if fm_match:
+            for line in fm_match.group(1).splitlines():
+                if ':' in line:
+                    key, _, val = line.partition(':')
+                    key, val = key.strip(), val.strip()
+                    if key and val and key not in ("type",):  # 'type' set by caller
+                        meta[f"fm_{key}"] = val
+
+        # 2. Heuristic outcome detection from body text
+        body_lower = text.lower()
+        if any(kw in body_lower for kw in ["error", "failed", "failure", "traceback", "permission denied", "crash"]):
+            meta["outcome"] = "failure"
+        elif any(kw in body_lower for kw in ["success", "completed", "resolved", "fixed", "working"]):
+            meta["outcome"] = "success"
+        else:
+            meta["outcome"] = "neutral"
+
+        # 3. Detect common service/topic keywords
+        service_patterns = [
+            (r'\b(nginx|apache|caddy|haproxy)\b', "web_server"),
+            (r'\b(postgres|mysql|mariadb|sqlite|redis|mongodb)\b', "database"),
+            (r'\b(docker|container|lxc|proxmox|podman)\b', "containers"),
+            (r'\b(systemd|systemctl|journalctl|service)\b', "systemd"),
+            (r'\b(ssh|sshd|openssh|authorized_keys)\b', "ssh"),
+            (r'\b(dns|bind|resolv|nameserver)\b', "dns"),
+            (r'\b(cert|tls|ssl|letsencrypt|acme)\b', "tls"),
+            (r'\b(git|github|gitlab|repo)\b', "git"),
+            (r'\b(cron|timer|schedule)\b', "scheduling"),
+            (r'\b(mount|fstab|disk|storage|zfs|lvm)\b', "storage"),
+            (r'\b(firewall|iptables|nftables|ufw)\b', "firewall"),
+            (r'\b(python|pip|venv|virtualenv)\b', "python"),
+            (r'\b(node|npm|yarn|javascript)\b', "nodejs"),
+        ]
+        topics = []
+        for pattern, label in service_patterns:
+            if re.search(pattern, body_lower):
+                topics.append(label)
+        if topics:
+            # ChromaDB metadata values must be str, so join
+            meta["topics"] = ",".join(sorted(set(topics)))
+
+        # 4. Pick up any tags passed through the payload (from rag_ingest)
+        if payload:
+            for key in ("tags", "topics", "outcome"):
+                val = payload.get(key)
+                if val and isinstance(val, str):
+                    meta[key] = val
+
+        return meta
+
+    async def _query_vector_db(self, query: str, n_results: int = 5, where: Optional[Dict] = None):
+        """Semantic search over Tier 3 memory using GPU-worker embeddings + ChromaDB.
+
+        Args:
+            where: Optional ChromaDB metadata filter, e.g.
+                   {"type": "tier_2_episode"}
+                   {"outcome": "failure"}
+                   {"$and": [{"type": "tier_2_episode"}, {"outcome": "failure"}]}
+        """
         # 1. Get the query embedding from GPU worker
         query_vector = await self._get_remote_embedding(query)
         if not query_vector:
@@ -2488,11 +2557,14 @@ You were asleep for: {time_str}
                 return []
             # Don't request more results than exist
             actual_n = min(n_results, count)
-            results = collection.query(
-                query_embeddings=[query_vector],
-                n_results=actual_n,
-                include=["documents", "metadatas", "distances"]
-            )
+            query_kwargs = {
+                "query_embeddings": [query_vector],
+                "n_results": actual_n,
+                "include": ["documents", "metadatas", "distances"]
+            }
+            if where:
+                query_kwargs["where"] = where
+            results = collection.query(**query_kwargs)
             matches = []
             if results and results.get("ids") and results["ids"][0]:
                 for i, doc_id in enumerate(results["ids"][0]):
@@ -2589,6 +2661,9 @@ You were asleep for: {time_str}
                 "type": doc_type
             }
 
+            # Extract structured metadata from YAML frontmatter and content
+            meta.update(self._extract_episode_metadata(text_body, result_payload))
+
             def _insert_sync():
                 collection = self._ensure_chroma()
                 try:
@@ -2616,6 +2691,7 @@ You were asleep for: {time_str}
         file_path = action.get("file_path", "")
         content = action.get("content", "")
         doc_id = action.get("doc_id", "")
+        tags = action.get("tags", "")  # comma-separated topic tags
 
         if file_path:
             p = Path(os.path.expanduser(file_path))
@@ -2648,6 +2724,9 @@ You were asleep for: {time_str}
             "source_file": source_label,
             "reply_to": self.internal_queue
         }
+        # Pass user-supplied tags through the payload so _handle_vector_result stores them
+        if tags:
+            task_payload["tags"] = tags
         await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
         logger.info(f"RAG ingest offloaded: {doc_id} ({len(content)} chars)")
 
