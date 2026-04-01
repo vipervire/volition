@@ -123,13 +123,42 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "rag_search",
-            "description": "Searches your Tier 3 VectorDB semantic memory. Returns matching Tier 2 episode summaries to your inbox.",
+            "description": "Searches your Tier 3 VectorDB semantic memory. Returns matching Tier 2 episode summaries ranked by relevance.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Natural language search query."}
+                    "query": {"type": "string", "description": "Natural language search query."},
+                    "n_results": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max results to return (default 5)."}
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_ingest",
+            "description": "Manually ingests a document into your Tier 3 VectorDB. Provide a file_path to index an existing file, or content for inline text. The document is sent to the GPU worker for embedding and stored in ChromaDB.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to a file to ingest (~ is expanded). Mutually exclusive with content."},
+                    "content": {"type": "string", "description": "Inline text content to ingest. Use when no file exists on disk."},
+                    "doc_id": {"type": "string", "description": "Optional custom document ID. Auto-generated if omitted."}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_status",
+            "description": "Returns statistics about your Tier 3 VectorDB: document count, sample entries, and health status.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
             }
         }
     },
