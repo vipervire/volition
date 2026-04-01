@@ -2740,20 +2740,44 @@ You were asleep for: {time_str}
                 "note": "Content sent to GPU for embedding. It will appear in vector memory shortly."}
 
     async def _tool_rag_status(self) -> Dict:
-        """Tool handler: return Tier 3 vector DB statistics."""
+        """Tool handler: return Tier 3 vector DB statistics and available filter values."""
         try:
             def _status_sync():
                 collection = self._ensure_chroma()
                 count = collection.count()
-                # Peek at a few entries to show what's stored
-                sample = {}
-                if count > 0:
-                    peek = collection.peek(limit=min(5, count))
-                    sample = {
-                        "sample_ids": peek.get("ids", []),
-                        "sample_sources": [m.get("source", "?") for m in (peek.get("metadatas") or [])]
-                    }
-                return {"status": "ok", "collection": "tier3_memory", "total_documents": count, **sample}
+                result = {"status": "ok", "collection": "tier3_memory", "total_documents": count}
+                if count == 0:
+                    return result
+
+                # Fetch all metadata to build filter index
+                all_data = collection.get(include=["metadatas"])
+                metadatas = all_data.get("metadatas") or []
+
+                # Collect distinct values for filterable fields
+                outcomes = set()
+                topics = set()
+                types = set()
+                for m in metadatas:
+                    if m.get("outcome"):
+                        outcomes.add(m["outcome"])
+                    if m.get("topics"):
+                        for t in m["topics"].split(","):
+                            topics.add(t.strip())
+                    if m.get("type"):
+                        types.add(m["type"])
+
+                result["filterable_fields"] = {
+                    "outcome": sorted(outcomes),
+                    "topics": sorted(topics),
+                    "type": sorted(types)
+                }
+
+                # Peek at a few recent entries
+                peek = collection.peek(limit=min(5, count))
+                result["sample_ids"] = peek.get("ids", [])
+                result["sample_sources"] = [m.get("source", "?") for m in (peek.get("metadatas") or [])]
+
+                return result
 
             return await asyncio.to_thread(_status_sync)
         except Exception as e:

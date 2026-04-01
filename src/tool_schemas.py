@@ -159,7 +159,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "rag_status",
-            "description": "Returns statistics about your Tier 3 VectorDB: document count, sample entries, and health status.",
+            "description": "Returns statistics about your Tier 3 VectorDB: document count, sample entries, health status, and available filter values (outcomes, topics, types) for use with rag_search filter. Call this first to discover what metadata you can filter on.",
             "parameters": {
                 "type": "object",
                 "properties": {},
