@@ -1235,6 +1235,9 @@ class GuppiDaemon:
         
         # 1. RESTORED: Start Heartbeat
         self._bg_tasks.append(asyncio.create_task(self.heartbeat_loop()))
+
+        # 1b. Bootstrap vector DB: index any un-vectorized Tier 2 episodes
+        self._bg_tasks.append(asyncio.create_task(self._bootstrap_vector_db()))
         
         def safe_result(t):
             try: return t.result()
@@ -2115,8 +2118,23 @@ You were asleep for: {time_str}
 
             elif tool == "rag_search":
                 query = action.get("query")
-                matches = await self._query_vector_db(query)
+                n = action.get("n_results", 5)
+                where = action.get("filter")
+                matches = await self._query_vector_db(query, n_results=n, where=where)
                 result = {"matches": matches}
+
+            elif tool == "rag_ingest":
+                result = await self._tool_rag_ingest(action)
+
+            elif tool == "rag_status":
+                result = await self._tool_rag_status()
+
+            elif tool == "rag_reindex":
+                confirm = action.get("confirm", False)
+                if not confirm:
+                    result = {"status": "blocked", "message": "This will DELETE the entire vector DB and re-embed all episodes. Pass confirm=true to proceed."}
+                else:
+                    result = await self._tool_rag_reindex()
 
             elif tool == "todo_list":
                 result = await self._tool_todo_list(action.get("filter", "due"))
@@ -2452,9 +2470,133 @@ You were asleep for: {time_str}
 
         asyncio.create_task(_do_spawn())
 
-    async def _query_vector_db(self, query: str):
-        # Local mock or implementation of vector search
-        return [{"content": "Memory search placeholder", "meta": {}}]
+    def _ensure_chroma(self):
+        """Lazily initialise the ChromaDB persistent client and return the tier3 collection."""
+        if not self.chroma_client:
+            VECTOR_DB_PATH.mkdir(parents=True, exist_ok=True)
+            self.chroma_client = chromadb.PersistentClient(
+                path=str(VECTOR_DB_PATH),
+                settings=Settings(anonymized_telemetry=False)
+            )
+        return self.chroma_client.get_or_create_collection("tier3_memory")
+
+    @staticmethod
+    def _extract_episode_metadata(text: str, payload: Optional[Dict] = None) -> Dict:
+        """Parse YAML frontmatter and scan content for structured metadata tags.
+
+        Returns a flat dict of string values suitable for ChromaDB metadata
+        (ChromaDB only supports str/int/float/bool in metadata values).
+        """
+        meta = {}
+
+        # 1. Parse YAML frontmatter (between --- delimiters)
+        fm_match = re.match(r'^---\s*\n(.*?)\n---', text, re.DOTALL)
+        if fm_match:
+            for line in fm_match.group(1).splitlines():
+                if ':' in line:
+                    key, _, val = line.partition(':')
+                    key, val = key.strip(), val.strip()
+                    if key and val and key not in ("type",):  # 'type' set by caller
+                        meta[f"fm_{key}"] = val
+
+        # 2. Heuristic outcome detection from body text
+        body_lower = text.lower()
+        if any(kw in body_lower for kw in ["error", "failed", "failure", "traceback", "permission denied", "crash"]):
+            meta["outcome"] = "failure"
+        elif any(kw in body_lower for kw in ["success", "completed", "resolved", "fixed", "working"]):
+            meta["outcome"] = "success"
+        else:
+            meta["outcome"] = "neutral"
+
+        # 3. Detect common service/topic keywords
+        service_patterns = [
+            (r'\b(nginx|apache|caddy|haproxy)\b', "web_server"),
+            (r'\b(postgres|mysql|mariadb|sqlite|redis|mongodb)\b', "database"),
+            (r'\b(docker|container|lxc|proxmox|podman)\b', "containers"),
+            (r'\b(systemd|systemctl|journalctl|service)\b', "systemd"),
+            (r'\b(ssh|sshd|openssh|authorized_keys)\b', "ssh"),
+            (r'\b(dns|bind|resolv|nameserver)\b', "dns"),
+            (r'\b(cert|tls|ssl|letsencrypt|acme)\b', "tls"),
+            (r'\b(git|github|gitlab|repo)\b', "git"),
+            (r'\b(cron|timer|schedule)\b', "scheduling"),
+            (r'\b(mount|fstab|disk|storage|zfs|lvm)\b', "storage"),
+            (r'\b(firewall|iptables|nftables|ufw)\b', "firewall"),
+            (r'\b(python|pip|venv|virtualenv)\b', "python"),
+            (r'\b(node|npm|yarn|javascript)\b', "nodejs"),
+        ]
+        topics = []
+        for pattern, label in service_patterns:
+            if re.search(pattern, body_lower):
+                topics.append(label)
+        if topics:
+            # ChromaDB metadata values must be str, so join
+            meta["topics"] = ",".join(sorted(set(topics)))
+
+        # 4. Pick up any tags passed through the payload (from rag_ingest)
+        if payload:
+            for key in ("tags", "topics", "outcome"):
+                val = payload.get(key)
+                if val and isinstance(val, str):
+                    meta[key] = val
+
+        return meta
+
+    async def _query_vector_db(self, query: str, n_results: int = 5, where: Optional[Dict] = None):
+        """Semantic search over Tier 3 memory using GPU-worker embeddings + ChromaDB.
+
+        Args:
+            where: Optional ChromaDB metadata filter, e.g.
+                   {"type": "tier_2_episode"}
+                   {"outcome": "failure"}
+                   {"$and": [{"type": "tier_2_episode"}, {"outcome": "failure"}]}
+        """
+        # 1. Get the query embedding from GPU worker
+        query_vector = await self._get_remote_embedding(query)
+        if not query_vector:
+            logger.warning("RAG search failed: could not obtain query embedding from GPU worker.")
+            return [{"content": "Embedding service unavailable — unable to search vector memory.", "meta": {"error": True}}]
+
+        # 2. Query ChromaDB (blocking I/O, run in thread)
+        def _search_sync():
+            collection = self._ensure_chroma()
+            count = collection.count()
+            if count == 0:
+                return []
+            # Don't request more results than exist
+            actual_n = min(n_results, count)
+            query_kwargs = {
+                "query_embeddings": [query_vector],
+                "n_results": actual_n,
+                "include": ["documents", "metadatas", "distances"]
+            }
+            if where:
+                query_kwargs["where"] = where
+            results = collection.query(**query_kwargs)
+            matches = []
+            if results and results.get("ids") and results["ids"][0]:
+                for i, doc_id in enumerate(results["ids"][0]):
+                    distance = results["distances"][0][i] if results.get("distances") else None
+                    # ChromaDB uses L2 distance by default; lower = more similar
+                    # Convert to a 0-1 relevance score (heuristic)
+                    relevance = max(0.0, 1.0 - (distance / 2.0)) if distance is not None else None
+                    matches.append({
+                        "id": doc_id,
+                        "content": results["documents"][0][i][:2000],  # Truncate to avoid context blow-up
+                        "meta": results["metadatas"][0][i] if results.get("metadatas") else {},
+                        "relevance": round(relevance, 4) if relevance is not None else None,
+                        "distance": round(distance, 4) if distance is not None else None
+                    })
+            return matches
+
+        try:
+            matches = await asyncio.to_thread(_search_sync)
+            if not matches:
+                return [{"content": "No matching memories found in Tier 3 vector store.", "meta": {"empty": True}}]
+            logger.info(f"RAG search for '{query[:60]}...' returned {len(matches)} results.")
+            return matches
+        except Exception as e:
+            logger.error(f"RAG search failed: {e}", exc_info=True)
+            return [{"content": f"Vector search error: {e}", "meta": {"error": True}}]
     
     
 
@@ -2526,13 +2668,11 @@ You were asleep for: {time_str}
                 "type": doc_type
             }
 
+            # Extract structured metadata from YAML frontmatter and content
+            meta.update(self._extract_episode_metadata(text_body, result_payload))
+
             def _insert_sync():
-                if not self.chroma_client:
-                    self.chroma_client = chromadb.PersistentClient(
-                        path=str(VECTOR_DB_PATH),
-                        settings=Settings(anonymized_telemetry=False)
-                    )
-                collection = self.chroma_client.get_or_create_collection("tier3_memory")
+                collection = self._ensure_chroma()
                 try:
                     collection.upsert(
                         ids=[task_id],
@@ -2552,6 +2692,211 @@ You were asleep for: {time_str}
             logger.error(f"Failed to store vector result: {e}")
             return False
     
+
+    async def _tool_rag_ingest(self, action: Dict) -> Dict:
+        """Tool handler: manually ingest a file into the Tier 3 vector store."""
+        file_path = action.get("file_path", "")
+        content = action.get("content", "")
+        doc_id = action.get("doc_id", "")
+        tags = action.get("tags", "")  # comma-separated topic tags
+
+        if file_path:
+            p = Path(os.path.expanduser(file_path))
+            if not p.exists():
+                return {"status": "error", "message": f"File not found: {file_path}"}
+            content = p.read_text(encoding="utf-8")
+            if not doc_id:
+                doc_id = f"manual-{p.stem}-{uuid.uuid4().hex[:8]}"
+        elif content:
+            if not doc_id:
+                doc_id = f"manual-{uuid.uuid4().hex[:12]}"
+        else:
+            return {"status": "error", "message": "Provide either file_path or content to ingest."}
+
+        if not content.strip():
+            return {"status": "error", "message": "Content is empty, nothing to ingest."}
+
+        # Offload embedding to GPU worker via the standard pipeline
+        vec_task_id = f"vec-{doc_id}"
+        source_label = str(p.resolve()) if file_path else f"inline:{doc_id}"
+
+        # Stash metadata in Redis so _handle_vector_result can find it
+        if file_path:
+            await retry_async(self.r.set, f"vec_meta:{vec_task_id}", source_label, ex=3600)
+
+        task_payload = {
+            "task_id": vec_task_id,
+            "type": "embed",
+            "content": content,
+            "source_file": source_label,
+            "reply_to": self.internal_queue
+        }
+        # Pass user-supplied tags through the payload so _handle_vector_result stores them
+        if tags:
+            task_payload["tags"] = tags
+        await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
+        logger.info(f"RAG ingest offloaded: {doc_id} ({len(content)} chars)")
+
+        # For inline content (no file on disk), write a temp episode so _handle_vector_result can read it
+        if not file_path:
+            inline_path = EPISODES_DIR / f"{doc_id}.md"
+            inline_path.write_text(content, encoding="utf-8")
+            await retry_async(self.r.set, f"vec_meta:{vec_task_id}", str(inline_path.resolve()), ex=3600)
+
+        return {"status": "offloaded_to_gpu", "doc_id": doc_id, "chars": len(content),
+                "note": "Content sent to GPU for embedding. It will appear in vector memory shortly."}
+
+    async def _tool_rag_status(self) -> Dict:
+        """Tool handler: return Tier 3 vector DB statistics and available filter values."""
+        try:
+            def _status_sync():
+                collection = self._ensure_chroma()
+                count = collection.count()
+                result = {"status": "ok", "collection": "tier3_memory", "total_documents": count}
+                if count == 0:
+                    return result
+
+                # Fetch all metadata to build filter index
+                all_data = collection.get(include=["metadatas"])
+                metadatas = all_data.get("metadatas") or []
+
+                # Collect distinct values for filterable fields
+                outcomes = set()
+                topics = set()
+                types = set()
+                for m in metadatas:
+                    if m.get("outcome"):
+                        outcomes.add(m["outcome"])
+                    if m.get("topics"):
+                        for t in m["topics"].split(","):
+                            topics.add(t.strip())
+                    if m.get("type"):
+                        types.add(m["type"])
+
+                result["filterable_fields"] = {
+                    "outcome": sorted(outcomes),
+                    "topics": sorted(topics),
+                    "type": sorted(types)
+                }
+
+                # Peek at a few recent entries
+                peek = collection.peek(limit=min(5, count))
+                result["sample_ids"] = peek.get("ids", [])
+                result["sample_sources"] = [m.get("source", "?") for m in (peek.get("metadatas") or [])]
+
+                return result
+
+            return await asyncio.to_thread(_status_sync)
+        except Exception as e:
+            logger.error(f"RAG status check failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def _tool_rag_reindex(self) -> Dict:
+        """Wipe the vector DB and re-queue all episodes for fresh embedding."""
+        try:
+            # 1. Delete the collection (blocking)
+            def _wipe_sync():
+                collection = self._ensure_chroma()
+                old_count = collection.count()
+                self.chroma_client.delete_collection("tier3_memory")
+                return old_count
+
+            old_count = await asyncio.to_thread(_wipe_sync)
+            # Force re-creation on next access
+            self.chroma_client = None
+            logger.info(f"RAG reindex: wiped {old_count} documents from tier3_memory.")
+
+            # 2. Find all episode files (ep-*.md + manually ingested .md)
+            if not EPISODES_DIR.exists():
+                return {"status": "ok", "wiped": old_count, "queued": 0, "note": "No episodes directory found."}
+
+            all_episodes = sorted(EPISODES_DIR.glob("*.md"))
+            queued = 0
+            for ep_path in all_episodes:
+                content = ep_path.read_text(encoding="utf-8")
+                if not content.strip():
+                    continue
+
+                stem = ep_path.stem
+                # Use consistent ID derivation: ep-abc.md -> vec-abc, other.md -> vec-other
+                if stem.startswith("ep-"):
+                    vec_id = f"vec-{stem.replace('ep-', '')}"
+                else:
+                    vec_id = f"vec-{stem}"
+
+                await retry_async(self.r.set, f"vec_meta:{vec_id}", str(ep_path.resolve()), ex=7200)
+                task_payload = {
+                    "task_id": vec_id,
+                    "type": "embed",
+                    "content": content,
+                    "reply_to": self.internal_queue
+                }
+                await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
+                queued += 1
+
+            logger.info(f"RAG reindex: queued {queued} documents for re-embedding.")
+            return {"status": "ok", "wiped": old_count, "queued": queued,
+                    "note": "All documents sent to GPU worker for fresh embedding. This runs in the background."}
+
+        except Exception as e:
+            logger.error(f"RAG reindex failed: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
+
+    async def _bootstrap_vector_db(self):
+        """Startup task: find Tier 2 episodes not yet in vector DB and queue them for embedding."""
+        try:
+            if not EPISODES_DIR.exists():
+                return
+
+            episodes = sorted(EPISODES_DIR.glob("ep-*.md"))
+            if not episodes:
+                logger.info("Vector bootstrap: no episodes found to index.")
+                return
+
+            # Get the set of already-indexed document IDs
+            def _get_indexed_ids():
+                collection = self._ensure_chroma()
+                count = collection.count()
+                if count == 0:
+                    return set()
+                # Retrieve all IDs (ChromaDB get with no filter returns all)
+                all_data = collection.get(include=[])
+                return set(all_data.get("ids", []))
+
+            indexed_ids = await asyncio.to_thread(_get_indexed_ids)
+
+            queued = 0
+            for ep_path in episodes:
+                # Derive a stable ID from the filename (e.g. ep-abc123.md -> vec-abc123)
+                stem = ep_path.stem  # "ep-abc123"
+                ep_id = stem.replace("ep-", "")
+                vec_id = f"vec-{ep_id}"
+
+                if vec_id in indexed_ids:
+                    continue  # Already indexed
+
+                content = ep_path.read_text(encoding="utf-8")
+                if not content.strip():
+                    continue
+
+                # Stash path in Redis and push to GPU queue
+                await retry_async(self.r.set, f"vec_meta:{vec_id}", str(ep_path.resolve()), ex=7200)
+                task_payload = {
+                    "task_id": vec_id,
+                    "type": "embed",
+                    "content": content,
+                    "reply_to": self.internal_queue
+                }
+                await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
+                queued += 1
+
+            if queued > 0:
+                logger.info(f"Vector bootstrap: queued {queued} un-indexed episodes for embedding.")
+            else:
+                logger.info(f"Vector bootstrap: all {len(episodes)} episodes already indexed.")
+
+        except Exception as e:
+            logger.error(f"Vector bootstrap failed: {e}", exc_info=True)
 
     async def stop(self):
         logger.info("Shutting down GUPPI...")

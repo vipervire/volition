@@ -123,13 +123,61 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "rag_search",
-            "description": "Searches your Tier 3 VectorDB semantic memory. Returns matching Tier 2 episode summaries to your inbox.",
+            "description": "Searches your Tier 3 VectorDB semantic memory. Returns matching Tier 2 episode summaries ranked by relevance. Use 'filter' to narrow results by metadata (outcome, topics, type).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Natural language search query."}
+                    "query": {"type": "string", "description": "Natural language search query."},
+                    "n_results": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max results to return (default 5)."},
+                    "filter": {
+                        "type": "object",
+                        "description": "ChromaDB metadata filter. Examples: {\"outcome\": \"failure\"}, {\"topics\": {\"$contains\": \"storage\"}}, {\"$and\": [{\"outcome\": \"success\"}, {\"type\": \"tier_2_episode\"}]}. Available fields: outcome (success/failure/neutral), topics (comma-separated: storage,systemd,...), type (tier_2_episode/manual_ingest), source, fm_generated_at."
+                    }
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_ingest",
+            "description": "Manually ingests a document into your Tier 3 VectorDB. Provide a file_path to index an existing file, or content for inline text. The document is sent to the GPU worker for embedding and stored in ChromaDB. Metadata (outcome, topics) is auto-extracted from content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to a file to ingest (~ is expanded). Mutually exclusive with content."},
+                    "content": {"type": "string", "description": "Inline text content to ingest. Use when no file exists on disk."},
+                    "doc_id": {"type": "string", "description": "Optional custom document ID. Auto-generated if omitted."},
+                    "tags": {"type": "string", "description": "Comma-separated topic tags to attach (e.g. 'storage,systemd,nginx'). Merged with auto-detected topics."}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_status",
+            "description": "Returns statistics about your Tier 3 VectorDB: document count, sample entries, health status, and available filter values (outcomes, topics, types) for use with rag_search filter. Call this first to discover what metadata you can filter on.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_reindex",
+            "description": "DESTRUCTIVE: Wipes the entire Tier 3 VectorDB and re-embeds all episode files from scratch. Use after changing embedding models, fixing corrupted vectors, or clearing placeholder data. Requires confirm=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirm": {"type": "boolean", "description": "Must be true to proceed. Safety guard against accidental wipes."}
+                },
+                "required": ["confirm"]
             }
         }
     },
