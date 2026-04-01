@@ -1009,7 +1009,7 @@ echo "[SUCCESS] Bootstrap Complete."
 
     print("\n   c) Create a Python environment:")
     print(f"      {CYAN}python3 -m venv /opt/volition/venv{RESET}")
-    print(f"      {CYAN}/opt/volition/venv/bin/pip install fastapi uvicorn redis aiohttp jinja2{RESET}")
+    print(f"      {CYAN}/opt/volition/venv/bin/pip install fastapi uvicorn uvicorn[standard] redis aiohttp jinja2{RESET}")
 
     print("\n   d) Install the systemd service:")
     print(f"      {CYAN}cp dashboard/volition-dashboard.service /etc/systemd/system/{RESET}")
