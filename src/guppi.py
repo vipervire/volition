@@ -165,6 +165,11 @@ class LLMOutputError(Exception):
     pass
 
 
+class ToolCallError(Exception):
+    """Raised when the LLM produces a structurally valid but semantically invalid tool call (unknown tool, missing required params)."""
+    pass
+
+
 # [NEW] Volition 7.8: Clipboard Class
 class Clipboard:
     """Manages the persistent scratchpad for the agent."""
@@ -1568,8 +1573,30 @@ class GuppiDaemon:
 
             turn_id = f"turn-{uuid.uuid4()}"
             await self.log_abe_intent(turn_id, parent_evt_id, reasoning, action, thought_signature=thought_sig)
-            await self.execute_action(turn_id, action)
-            
+            try:
+                await self.execute_action(turn_id, action)
+            except ToolCallError as e:
+                await self.patch_abe_outcome(turn_id, {"status": "self_correcting", "error": str(e)}, notify=False)
+                if retry_count < 1:
+                    logger.warning(f"⚠️ Invalid tool call: {e}. Retrying with correction notice.")
+                    correction_notice = (
+                        f"SYSTEM ALERT: Your last tool call was invalid. "
+                        f"The error was: {e}. "
+                        f"Review the available tools and their required parameters, then try again."
+                    )
+                    await self.run_think_cycle(
+                        event_data, parent_evt_id,
+                        force_model=MODEL_PRO,
+                        system_notice=correction_notice,
+                        orientation_data=orientation_data,
+                        retry_count=retry_count + 1
+                    )
+                else:
+                    logger.error(f"❌ Tool call self-correction failed after retry. Logging error.")
+                    await self.patch_abe_outcome(turn_id, {"status": "error", "message": str(e)})
+                cycle_success = True
+                return
+
             # [7.8] SUCCESS MARKER
             cycle_success = True
             
@@ -2028,6 +2055,14 @@ You were asleep for: {time_str}
         logger.info(f"Executing Tool: {tool}")
         result = {"status": "success"}
 
+        # Pre-dispatch validation: catch LLM-attributable errors before any side effects.
+        from tool_schemas import TOOL_SCHEMAS
+        schema_map = {s["function"]["name"]: s["function"]["parameters"].get("required", []) for s in TOOL_SCHEMAS}
+        required = schema_map.get(tool, [])
+        missing = [p for p in required if p not in action or action[p] is None]
+        if missing:
+            raise ToolCallError(f"Tool '{tool}' missing required parameters: {missing}")
+
         try:
             if tool == "help":
                 result = self._tool_help(action.get("tool_name"))
@@ -2330,10 +2365,10 @@ You were asleep for: {time_str}
                 return
 
             else:
-                result = {"status": "error", "message": f"Unknown tool: {tool}"}
-                await self.patch_abe_outcome(turn_id, result)
-                return
+                raise ToolCallError(f"Unknown tool: '{tool}'")
 
+        except ToolCallError:
+            raise
         except Exception as e:
             result = {"status": "error", "message": str(e)}
             logger.exception("Action Execution Failed")
