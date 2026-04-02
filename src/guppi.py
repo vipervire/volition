@@ -1294,9 +1294,6 @@ class GuppiDaemon:
         # 1. RESTORED: Start Heartbeat
         self._bg_tasks.append(asyncio.create_task(self.heartbeat_loop()))
 
-        # 1b. Bootstrap vector DB: index any un-vectorized Tier 2 episodes
-        self._bg_tasks.append(asyncio.create_task(self._bootstrap_vector_db()))
-        
         def safe_result(t):
             try: return t.result()
             except asyncio.CancelledError: return None
@@ -2854,11 +2851,14 @@ You were asleep for: {time_str}
                 if not force_new:
                     dup = self._find_semantic_duplicate(collection, vector, exclude_id=task_id)
                     if dup:
-                        # Log the near-duplicate but keep both — deleting cascades
-                        # and wipes earlier docs, causing full re-embed on every restart.
+                        upsert_id = dup["id"]
+                        # Preserve original ingested_at; record update provenance
+                        meta["ingested_at"] = dup["metadata"].get("ingested_at", now_iso)
+                        meta["updated_at"] = now_iso
+                        meta["supersedes"] = task_id
                         logger.info(
-                            f"Dedup: near-duplicate of '{dup['id']}' "
-                            f"(L2={dup['distance']:.4f}), keeping both under '{task_id}'"
+                            f"Dedup: updating existing doc '{upsert_id}' "
+                            f"(L2={dup['distance']:.4f}) instead of inserting '{task_id}'"
                         )
 
                 try:
