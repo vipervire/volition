@@ -1549,53 +1549,55 @@ class GuppiDaemon:
                     response_payload = {"reasoning": "JSON Repair Failed twice. Safety Shutdown.", "action": {"tool": "hibernate"}}
             
             reasoning = response_payload.get("reasoning", "No reasoning provided.")
-            action = response_payload.get("action", {"tool": "hibernate"})
+            action_list = response_payload.get("actions") or [response_payload.get("action", {"tool": "hibernate"})]
             thought_sig = response_payload.get("thoughtSignature")
-            tool = action.get("tool")
 
-            # Implicit Escalation
-            if is_flash and tool in FLASH_FORBIDDEN_TOOLS and force_model is None:
-                logger.warning(f"ESCALATION: Flash attempted {tool}. Waking Pro.")
-                await self.log_guppi_event("EscalationTrigger", f"Denied Flash tool: {tool}")
+            for action in action_list:
+                tool = action.get("tool")
 
-                escalation_msg = (
-                    f"[SYSTEM NOTICE] Your chat layer (Flash) attempted to run '{tool}' "
-                    f"but was denied. You are now awake (Pro). "
-                    f"Review the context and decide if this action is required."
-                )
-                
-                # Recursively call self with Force Pro
-                await self.run_think_cycle(
-                    event_data, parent_evt_id, force_model=MODEL_PRO, system_notice=escalation_msg, orientation_data=orientation_data
-                )
-                cycle_success = True 
-                return
+                # Implicit Escalation
+                if is_flash and tool in FLASH_FORBIDDEN_TOOLS and force_model is None:
+                    logger.warning(f"ESCALATION: Flash attempted {tool}. Waking Pro.")
+                    await self.log_guppi_event("EscalationTrigger", f"Denied Flash tool: {tool}")
 
-            turn_id = f"turn-{uuid.uuid4()}"
-            await self.log_abe_intent(turn_id, parent_evt_id, reasoning, action, thought_signature=thought_sig)
-            try:
-                await self.execute_action(turn_id, action)
-            except ToolCallError as e:
-                await self.patch_abe_outcome(turn_id, {"status": "self_correcting", "error": str(e)}, notify=False)
-                if retry_count < 1:
-                    logger.warning(f"⚠️ Invalid tool call: {e}. Retrying with correction notice.")
-                    correction_notice = (
-                        f"SYSTEM ALERT: Your last tool call was invalid. "
-                        f"The error was: {e}. "
-                        f"Review the available tools and their required parameters, then try again."
+                    escalation_msg = (
+                        f"[SYSTEM NOTICE] Your chat layer (Flash) attempted to run '{tool}' "
+                        f"but was denied. You are now awake (Pro). "
+                        f"Review the context and decide if this action is required."
                     )
+
+                    # Recursively call self with Force Pro
                     await self.run_think_cycle(
-                        event_data, parent_evt_id,
-                        force_model=MODEL_PRO,
-                        system_notice=correction_notice,
-                        orientation_data=orientation_data,
-                        retry_count=retry_count + 1
+                        event_data, parent_evt_id, force_model=MODEL_PRO, system_notice=escalation_msg, orientation_data=orientation_data
                     )
-                else:
-                    logger.error(f"❌ Tool call self-correction failed after retry. Logging error.")
-                    await self.patch_abe_outcome(turn_id, {"status": "error", "message": str(e)})
-                cycle_success = True
-                return
+                    cycle_success = True
+                    return
+
+                turn_id = f"turn-{uuid.uuid4()}"
+                await self.log_abe_intent(turn_id, parent_evt_id, reasoning, action, thought_signature=thought_sig)
+                try:
+                    await self.execute_action(turn_id, action)
+                except ToolCallError as e:
+                    await self.patch_abe_outcome(turn_id, {"status": "self_correcting", "error": str(e)}, notify=False)
+                    if retry_count < 1:
+                        logger.warning(f"⚠️ Invalid tool call: {e}. Retrying with correction notice.")
+                        correction_notice = (
+                            f"SYSTEM ALERT: Your last tool call was invalid. "
+                            f"The error was: {e}. "
+                            f"Review the available tools and their required parameters, then try again."
+                        )
+                        await self.run_think_cycle(
+                            event_data, parent_evt_id,
+                            force_model=MODEL_PRO,
+                            system_notice=correction_notice,
+                            orientation_data=orientation_data,
+                            retry_count=retry_count + 1
+                        )
+                    else:
+                        logger.error(f"❌ Tool call self-correction failed after retry. Logging error.")
+                        await self.patch_abe_outcome(turn_id, {"status": "error", "message": str(e)})
+                    cycle_success = True
+                    return
 
             # [7.8] SUCCESS MARKER
             cycle_success = True
@@ -1782,15 +1784,21 @@ class GuppiDaemon:
                 # 4. Native tool_calls path
                 tool_calls = message.get("tool_calls")
                 if tool_calls:
-                    tc = tool_calls[0]
-                    func = tc.get("function", {})
-                    tool_name = func.get("name", "hibernate")
-                    try:
-                        tool_args = json.loads(func.get("arguments", "{}"))
-                    except json.JSONDecodeError as e:
-                        raise LLMOutputError(f"Invalid JSON in tool_call arguments: {e}")
-                    tool_args["tool"] = tool_name
-                    return {"reasoning": reasoning or text, "action": tool_args}
+                    actions = []
+                    for tc in tool_calls:
+                        func = tc.get("function", {})
+                        tool_name = func.get("name", "hibernate")
+                        try:
+                            tool_args = json.loads(func.get("arguments", "{}"))
+                        except json.JSONDecodeError as e:
+                            raise LLMOutputError(f"Invalid JSON in tool_call arguments: {e}")
+                        tool_args["tool"] = tool_name
+                        actions.append(tool_args)
+                    if len(actions) == 1:
+                        return {"reasoning": reasoning or text, "action": actions[0]}
+                    else:
+                        logger.info(f"LLM returned {len(actions)} tool calls in one response.")
+                        return {"reasoning": reasoning or text, "actions": actions}
 
                 # 5. Inline JSON fallback: some models dump tool calls as text content
                 #    (e.g. Ollama, older llama.cpp builds). Detect and normalize.
