@@ -36,7 +36,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "remote_exec",
-            "description": "Executes a shell command on a remote host via SSH. Asynchronous — GUPPI messages your inbox with stdout/stderr when complete.",
+            "description": "Executes a shell command on a remote host via SSH. This is an asynchronous action. GUPPI handles the SSH connection, key management, and execution, and will message your inbox with the stdout/stderr when complete. Before first use of this tool on a new host, you will need to update SSH known_hosts with the host signature.",
             "parameters": {
                 "type": "object",
                 "properties": {
