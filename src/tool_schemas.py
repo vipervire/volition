@@ -21,7 +21,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "shell",
+            "name": "local_shell",
             "description": "Executes a non-blocking local shell command. GUPPI will message your inbox when done. Use for ls, cat, grep, and running scripts in ~/bin.",
             "parameters": {
                 "type": "object",
@@ -50,7 +50,7 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "write_file",
+            "name": "local_write_file",
             "description": "Writes or appends text to a file. Use mode 'w' to overwrite, 'a' to append. This is how you create tools and notes.",
             "parameters": {
                 "type": "object",
@@ -431,7 +431,7 @@ TOOL_SCHEMAS = [
 
 # Tools the Flash (chat) tier is not allowed to execute.
 # These are filtered out of the schema before sending, so Flash never sees them.
-FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
+FLASH_FORBIDDEN_TOOLS = {"local_shell", "local_write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
 
 
 def get_schemas_for_tier(is_flash: bool) -> list:

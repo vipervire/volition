@@ -26,7 +26,7 @@ This is the **Two-Phase Commit** log representing an agent's agency.
   "thought_signature": "(Optional) Internal CoT trace from the model",
   "reasoning": "I need to check the nginx logs to diagnose the 403 error.",
   "action": {
-    "tool": "shell",
+    "tool": "local_shell",
     "command": "tail -n 20 /var/log/nginx/error.log"
   },
   "results": null
@@ -47,7 +47,7 @@ This is the **Two-Phase Commit** log representing an agent's agency.
   "thought_signature": "...",
   "reasoning": "I need to check the nginx logs to diagnose the 403 error.",
   "action": {
-    "tool": "shell",
+    "tool": "local_shell",
     "command": "tail -n 20 /var/log/nginx/error.log"
   },
   "results": {

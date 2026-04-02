@@ -64,7 +64,7 @@ GUPPI determines which "lobe" of the brain to activate based on the trigger even
     
 3. **Escalation Check (The Safety Valve):**
     
-    - If **Flash** is active but attempts to use a "Heavy Tool" (e.g., `shell`, `write_file`, `spawn_abe`), GUPPI **denies** the action.
+    - If **Flash** is active but attempts to use a "Heavy Tool" (e.g., `local_shell`, `local_write_file`, `spawn_abe`), GUPPI **denies** the action.
         
     - **Escalation:** GUPPI immediately re-runs the Think Cycle using **Pro**, injecting a `[SYSTEM NOTICE]` explaining that the chat layer requested a privileged action.
         

@@ -3,7 +3,7 @@
 *It is injected at Genesis as a baseline and is expected to evolve.*
 
 ## Current Status
-* **Process:** To add a rule here, discuss it in `chat:synchronous`. If the fleet agrees, _every abe must_ use `write_file` to append the rule in their own system.
+* **Process:** To add a rule here, discuss it in `chat:synchronous`. If the fleet agrees, _every abe must_ use `local_write_file` to append the rule in their own system.
 
 ### Fleet Rules
 

@@ -128,7 +128,7 @@ CONTEXT_LIMITS = {
     "qwen/qwen3.5-flash-02-23": 1_000_000,
 }
 DEFAULT_CONTEXT_LIMIT = 32_768
-FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
+FLASH_FORBIDDEN_TOOLS = {"local_shell", "local_write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
 
 # Logging Setup
 logging.basicConfig(
@@ -2101,7 +2101,7 @@ You were asleep for: {time_str}
                 elif sub == "clear":
                     result = {"status": "success", "message": self.clipboard.clear()}
 
-            elif tool == "shell":
+            elif tool == "local_shell":
                 cmd = action.get("command")
                 await self._spawn_subprocess_exec(turn_id, cmd, tracked=True)
                 return 
@@ -2112,7 +2112,7 @@ You were asleep for: {time_str}
                 asyncio.create_task(self._run_remote_ssh(turn_id, host, cmd))
                 return
 
-            elif tool == "write_file":
+            elif tool == "local_write_file":
                 p = Path(action["path"]).expanduser()
                 p.parent.mkdir(parents=True, exist_ok=True)
                 mode = action.get("mode", "w")
