@@ -2854,18 +2854,12 @@ You were asleep for: {time_str}
                 if not force_new:
                     dup = self._find_semantic_duplicate(collection, vector, exclude_id=task_id)
                     if dup:
-                        old_dup_id = dup["id"]
-                        # Preserve original ingested_at; record update provenance
-                        meta["ingested_at"] = dup["metadata"].get("ingested_at", now_iso)
-                        meta["updated_at"] = now_iso
-                        meta["superseded_id"] = old_dup_id
+                        # Log the near-duplicate but keep both — deleting cascades
+                        # and wipes earlier docs, causing full re-embed on every restart.
                         logger.info(
-                            f"Dedup: merging into '{task_id}', removing old doc '{old_dup_id}' "
-                            f"(L2={dup['distance']:.4f})"
+                            f"Dedup: near-duplicate of '{dup['id']}' "
+                            f"(L2={dup['distance']:.4f}), keeping both under '{task_id}'"
                         )
-                        # Remove the old duplicate so we don't accumulate near-identical docs
-                        if old_dup_id != task_id:
-                            collection.delete(ids=[old_dup_id])
 
                 try:
                     collection.upsert(
@@ -3060,13 +3054,8 @@ You were asleep for: {time_str}
                 logger.info(f"Vector bootstrap: ChromaDB collection has {count} documents on disk.")
                 if count == 0:
                     return set()
-                # Retrieve all IDs + metadata to also recognize superseded (deduped) episodes
-                all_data = collection.get(include=["metadatas"])
-                ids = set(all_data.get("ids", []))
-                for m in (all_data.get("metadatas") or []):
-                    if m and m.get("superseded_id"):
-                        ids.add(m["superseded_id"])
-                return ids
+                all_data = collection.get(include=[])
+                return set(all_data.get("ids", []))
 
             indexed_ids = await asyncio.to_thread(_get_indexed_ids)
 
