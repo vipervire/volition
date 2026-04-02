@@ -1252,10 +1252,13 @@ class GuppiDaemon:
         logger.info(f"Internal Queue Received: {str(data)[:100]}...")
         
         # Vector Result (GPU Worker)
-        if data.get("event") == "ScribeResult" and "vector" in data.get("content", {}):
-            await self._handle_vector_result(data)
+        if data.get("event") == "ScribeResult":
+            if "vector" in data.get("content", {}):
+                await self._handle_vector_result(data)
+            else:
+                logger.warning(f"ScribeResult with no vector (task={data.get('task_id')}): {str(data.get('content', {}))[:200]}")
             return
-        
+
         if data.get("type") == "embed":
             # legacy form from earlier workers, should remove around 8.0
             await self._handle_vector_result(data)
@@ -2800,7 +2803,9 @@ You were asleep for: {time_str}
             content = result_payload.get("content", {})
             vector = content.get("vector")
             
-            if not vector or not task_id.startswith("vec-"): return False
+            if not vector or not task_id.startswith("vec-"):
+                logger.warning(f"Vector result dropped: task_id='{task_id}', has_vector={bool(vector)}")
+                return False
 
             # Retrieve the path from Redis (stateless)
             source_file = await self.r.get(f"vec_meta:{task_id}")
@@ -3052,6 +3057,7 @@ You were asleep for: {time_str}
             def _get_indexed_ids():
                 collection = self._ensure_chroma()
                 count = collection.count()
+                logger.info(f"Vector bootstrap: ChromaDB collection has {count} documents on disk.")
                 if count == 0:
                     return set()
                 # Retrieve all IDs + metadata to also recognize superseded (deduped) episodes
@@ -3104,6 +3110,15 @@ You were asleep for: {time_str}
         stop_deadline = time.time() + 5
         while self.running_subprocesses and time.time() < stop_deadline:
             await asyncio.sleep(0.1)
+
+        # Release ChromaDB client so SQLite WAL is checkpointed
+        if self.chroma_client:
+            try:
+                del self.chroma_client
+                logger.info("ChromaDB client released.")
+            except Exception as e:
+                logger.warning(f"ChromaDB release: {e}")
+            self.chroma_client = None
 
         async with self.log_lock: await self._rewrite_log_file()
         try: await self.r.close()
