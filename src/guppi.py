@@ -1294,6 +1294,15 @@ class GuppiDaemon:
         # 1. RESTORED: Start Heartbeat
         self._bg_tasks.append(asyncio.create_task(self.heartbeat_loop()))
 
+        # 1b. Bootstrap vector DB only on first run (empty collection)
+        try:
+            collection = self._ensure_chroma()
+            if collection.count() == 0 and list(EPISODES_DIR.glob("ep-*.md")):
+                logger.info("Vector DB empty with existing episodes — running one-time bootstrap.")
+                self._bg_tasks.append(asyncio.create_task(self._bootstrap_vector_db()))
+        except Exception as e:
+            logger.warning(f"Vector bootstrap check failed: {e}")
+
         def safe_result(t):
             try: return t.result()
             except asyncio.CancelledError: return None
