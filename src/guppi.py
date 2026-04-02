@@ -2849,15 +2849,18 @@ You were asleep for: {time_str}
                 if not force_new:
                     dup = self._find_semantic_duplicate(collection, vector, exclude_id=task_id)
                     if dup:
-                        upsert_id = dup["id"]
+                        old_dup_id = dup["id"]
                         # Preserve original ingested_at; record update provenance
                         meta["ingested_at"] = dup["metadata"].get("ingested_at", now_iso)
                         meta["updated_at"] = now_iso
-                        meta["supersedes"] = task_id
+                        meta["superseded_id"] = old_dup_id
                         logger.info(
-                            f"Dedup: updating existing doc '{upsert_id}' "
-                            f"(L2={dup['distance']:.4f}) instead of inserting '{task_id}'"
+                            f"Dedup: merging into '{task_id}', removing old doc '{old_dup_id}' "
+                            f"(L2={dup['distance']:.4f})"
                         )
+                        # Remove the old duplicate so we don't accumulate near-identical docs
+                        if old_dup_id != task_id:
+                            collection.delete(ids=[old_dup_id])
 
                 try:
                     collection.upsert(
@@ -3051,9 +3054,13 @@ You were asleep for: {time_str}
                 count = collection.count()
                 if count == 0:
                     return set()
-                # Retrieve all IDs (ChromaDB get with no filter returns all)
-                all_data = collection.get(include=[])
-                return set(all_data.get("ids", []))
+                # Retrieve all IDs + metadata to also recognize superseded (deduped) episodes
+                all_data = collection.get(include=["metadatas"])
+                ids = set(all_data.get("ids", []))
+                for m in (all_data.get("metadatas") or []):
+                    if m and m.get("superseded_id"):
+                        ids.add(m["superseded_id"])
+                return ids
 
             indexed_ids = await asyncio.to_thread(_get_indexed_ids)
 
@@ -3083,9 +3090,9 @@ You were asleep for: {time_str}
                 queued += 1
 
             if queued > 0:
-                logger.info(f"Vector bootstrap: queued {queued} un-indexed episodes for embedding.")
+                logger.info(f"Vector bootstrap: queued {queued} un-indexed episodes for embedding (indexed: {len(indexed_ids)}, total: {len(episodes)}).")
             else:
-                logger.info(f"Vector bootstrap: all {len(episodes)} episodes already indexed.")
+                logger.info(f"Vector bootstrap: all {len(episodes)} episodes already indexed ({len(indexed_ids)} vectors in collection).")
 
         except Exception as e:
             logger.error(f"Vector bootstrap failed: {e}", exc_info=True)
