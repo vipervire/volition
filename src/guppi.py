@@ -87,7 +87,8 @@ OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview") 
 MODEL_PRO = os.environ.get("MODEL_PRO", "google/gemini-3-flash-preview:thinking")
 MODEL_FLASH = os.environ.get("MODEL_FLASH", "google/gemini-3-flash-preview")
-MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "local/mistral") 
+MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "local/mistral")
+MODEL_FALLBACK = os.environ.get("MODEL_GUPPI_FALLBACK", "google/gemini-2.5-flash-preview")
 
 # v7.0: Social Stream Config
 SOCIAL_DIGEST_STREAM = "volition:social_digests"
@@ -1643,7 +1644,12 @@ class GuppiDaemon:
     async def call_abe_api(self, prompt_text, model_id: str = GEMINI_MODEL, tools=None) -> Dict:
         # Everything routes through the OpenAI-compatible endpoint now
         is_pro = (model_id == MODEL_PRO)
-        return await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro, tools=tools)
+        result = await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro, tools=tools)
+        # Fallback to MODEL_FALLBACK if rate-limited after exhausting retries
+        if "API Error: 429" in result.get("reasoning", "") and model_id != MODEL_FALLBACK:
+            logger.warning(f"Primary model {model_id} rate-limited. Falling back to {MODEL_FALLBACK}.")
+            result = await self._call_openai_compat(MODEL_FALLBACK, prompt_text, is_pro=False, tools=tools)
+        return result
 
     async def _call_openai_compat(self, model_id, prompt, is_pro=False, tools=None):
         # Support (system, user) tuple for prompt caching via system message prefix
@@ -1732,118 +1738,131 @@ class GuppiDaemon:
             payload["temperature"] = 0.6
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    logger.error(f"OpenAI-Compat Error {resp.status}: {err}")
-                    return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
-                
-                data = await resp.json()
+            for attempt in range(REDIS_RETRY_ATTEMPTS):
+                async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
+                    if resp.status == 429:
+                        if attempt < REDIS_RETRY_ATTEMPTS - 1:
+                            retry_after = resp.headers.get("Retry-After")
+                            if retry_after:
+                                delay = float(retry_after)
+                            else:
+                                delay = REDIS_RETRY_BASE * (2 ** attempt)
+                                delay = delay * (0.9 + random.random() * 0.2)
+                            logger.warning(f"Rate limited (429) on {actual_model} (attempt {attempt + 1}/{REDIS_RETRY_ATTEMPTS}), retrying in {delay:.2f}s")
+                            await asyncio.sleep(delay)
+                            continue
+                        # Retries exhausted — fall through to error handler
+                    if resp.status != 200:
+                        err = await resp.text()
+                        logger.error(f"OpenAI-Compat Error {resp.status}: {err}")
+                        return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
 
-                # Token usage telemetry
-                usage = data.get("usage", {})
-                if usage:
-                    try:
-                        ctx_limit = CONTEXT_LIMITS.get(actual_model, DEFAULT_CONTEXT_LIMIT)
-                        total = usage.get("total_tokens", 0) or 0
-                        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
-                        await self.r.xadd("volition:token_usage", {
-                            "source": "guppi",
-                            "agent": self.abe_name,
-                            "model": actual_model,
-                            "prompt_tokens": str(usage.get("prompt_tokens", 0) or 0),
-                            "completion_tokens": str(usage.get("completion_tokens", 0) or 0),
-                            "total_tokens": str(total),
-                            "cached_tokens": str(cached),
-                            "context_limit": str(ctx_limit),
-                            "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
-                            "ts": datetime.utcnow().isoformat()
-                        })
-                    except Exception:
-                        pass
+                    data = await resp.json()
 
-                choices = data.get("choices")
-                if not choices:
-                    raise LLMOutputError(f"API returned empty or null choices. Full response: {data}")
-                choice = choices[0]
-                message = choice["message"]
-
-                text = message.get("content", "") or ""
-
-                # 1. Grab native reasoning content (o1 / llama.cpp style)
-                reasoning = message.get("reasoning_content", "") or ""
-
-                # 2. Fallback: If the model stuffed <think> tags into the main content block
-                if not reasoning and "<think>" in text:
-                    think_blocks = re.findall(r'<think>(.*?)</think>', text, re.DOTALL)
-                    if think_blocks:
-                        reasoning = "\n".join(block.strip() for block in think_blocks)
-                        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-
-                # 3. Offload the internal monologue to a forensic log (Chunked by Date)
-                if reasoning:
-                    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-                    thoughts_file = ABE_ROOT / f"logs/thoughts/{self.abe_name}-{today_str}.thot"
-                    thoughts_file.parent.mkdir(parents=True, exist_ok=True)
-
-                    with open(thoughts_file, "a") as f:
-                        ts = datetime.utcnow().isoformat()
-                        f.write(f"\n--- [THOUGHT BURST: {ts}] ---\n{reasoning}\n--- [END] ---\n")
-
-                # 4. Native tool_calls path
-                tool_calls = message.get("tool_calls")
-                if tool_calls:
-                    actions = []
-                    for tc in tool_calls:
-                        func = tc.get("function", {})
-                        tool_name = func.get("name", "hibernate")
+                    # Token usage telemetry
+                    usage = data.get("usage", {})
+                    if usage:
                         try:
-                            tool_args = json.loads(func.get("arguments", "{}"))
-                        except json.JSONDecodeError as e:
-                            raise LLMOutputError(f"Invalid JSON in tool_call arguments: {e}")
-                        tool_args["tool"] = tool_name
-                        actions.append(tool_args)
-                    if len(actions) == 1:
-                        return {"reasoning": reasoning or text, "action": actions[0]}
-                    else:
-                        logger.info(f"LLM returned {len(actions)} tool calls in one response.")
-                        return {"reasoning": reasoning or text, "actions": actions}
-
-                # 5. Inline JSON fallback: some models dump tool calls as text content
-                #    (e.g. Ollama, older llama.cpp builds). Detect and normalize.
-                #    Check both `text` and `reasoning` — some models stuff the tool
-                #    call JSON inside <think> tags, leaving `text` empty after stripping.
-                for candidate in ([text] if text else []) + ([reasoning] if tools and reasoning and not text else []):
-                    stripped = candidate.strip()
-                    if stripped.startswith("```json"):
-                        stripped = stripped[7:].rstrip("`").strip()
-                    elif stripped.startswith("```"):
-                        stripped = stripped[3:].rstrip("`").strip()
-                    # Extract the last JSON object — reasoning may contain prose before the tool call
-                    json_objects = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', stripped))
-                    candidates = [json_objects[-1].group(0)] if json_objects else [stripped]
-                    for json_str in candidates:
-                        try:
-                            parsed_content = json.loads(json_str)
-                            if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
-                                logger.info("Intercepted inline JSON tool call. Normalizing.")
-                                args = parsed_content["arguments"] if isinstance(parsed_content["arguments"], dict) else json.loads(parsed_content["arguments"])
-                                args["tool"] = parsed_content["name"]
-                                return {"reasoning": reasoning, "action": args}
+                            ctx_limit = CONTEXT_LIMITS.get(actual_model, DEFAULT_CONTEXT_LIMIT)
+                            total = usage.get("total_tokens", 0) or 0
+                            cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
+                            await self.r.xadd("volition:token_usage", {
+                                "source": "guppi",
+                                "agent": self.abe_name,
+                                "model": actual_model,
+                                "prompt_tokens": str(usage.get("prompt_tokens", 0) or 0),
+                                "completion_tokens": str(usage.get("completion_tokens", 0) or 0),
+                                "total_tokens": str(total),
+                                "cached_tokens": str(cached),
+                                "context_limit": str(ctx_limit),
+                                "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
+                                "ts": datetime.utcnow().isoformat()
+                            })
                         except Exception:
                             pass
 
-                # 5b. XML tool-call fallback: some models trained on XML tool-use
-                #     formats emit <tool_call>, <function_call>, or <invoke> XML
-                #     instead of JSON. Parse and normalize.
-                if tools and text:
-                    xml_result = self._parse_xml_tool_call(text)
-                    if xml_result:
-                        logger.info("Intercepted XML tool call. Normalizing.")
-                        return {"reasoning": reasoning, "action": xml_result}
+                    choices = data.get("choices")
+                    if not choices:
+                        raise LLMOutputError(f"API returned empty or null choices. Full response: {data}")
+                    choice = choices[0]
+                    message = choice["message"]
 
-                # 6. Legacy JSON path (no tools passed, or fallback)
-                return self._clean_json(text or reasoning, thought_sig=None)
+                    text = message.get("content", "") or ""
+
+                    # 1. Grab native reasoning content (o1 / llama.cpp style)
+                    reasoning = message.get("reasoning_content", "") or ""
+
+                    # 2. Fallback: If the model stuffed <think> tags into the main content block
+                    if not reasoning and "<think>" in text:
+                        think_blocks = re.findall(r'<think>(.*?)</think>', text, re.DOTALL)
+                        if think_blocks:
+                            reasoning = "\n".join(block.strip() for block in think_blocks)
+                            text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+                    # 3. Offload the internal monologue to a forensic log (Chunked by Date)
+                    if reasoning:
+                        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                        thoughts_file = ABE_ROOT / f"logs/thoughts/{self.abe_name}-{today_str}.thot"
+                        thoughts_file.parent.mkdir(parents=True, exist_ok=True)
+
+                        with open(thoughts_file, "a") as f:
+                            ts = datetime.utcnow().isoformat()
+                            f.write(f"\n--- [THOUGHT BURST: {ts}] ---\n{reasoning}\n--- [END] ---\n")
+
+                    # 4. Native tool_calls path
+                    tool_calls = message.get("tool_calls")
+                    if tool_calls:
+                        actions = []
+                        for tc in tool_calls:
+                            func = tc.get("function", {})
+                            tool_name = func.get("name", "hibernate")
+                            try:
+                                tool_args = json.loads(func.get("arguments", "{}"))
+                            except json.JSONDecodeError as e:
+                                raise LLMOutputError(f"Invalid JSON in tool_call arguments: {e}")
+                            tool_args["tool"] = tool_name
+                            actions.append(tool_args)
+                        if len(actions) == 1:
+                            return {"reasoning": reasoning or text, "action": actions[0]}
+                        else:
+                            logger.info(f"LLM returned {len(actions)} tool calls in one response.")
+                            return {"reasoning": reasoning or text, "actions": actions}
+
+                    # 5. Inline JSON fallback: some models dump tool calls as text content
+                    #    (e.g. Ollama, older llama.cpp builds). Detect and normalize.
+                    #    Check both `text` and `reasoning` — some models stuff the tool
+                    #    call JSON inside <think> tags, leaving `text` empty after stripping.
+                    for candidate in ([text] if text else []) + ([reasoning] if tools and reasoning and not text else []):
+                        stripped = candidate.strip()
+                        if stripped.startswith("```json"):
+                            stripped = stripped[7:].rstrip("`").strip()
+                        elif stripped.startswith("```"):
+                            stripped = stripped[3:].rstrip("`").strip()
+                        # Extract the last JSON object — reasoning may contain prose before the tool call
+                        json_objects = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', stripped))
+                        candidates = [json_objects[-1].group(0)] if json_objects else [stripped]
+                        for json_str in candidates:
+                            try:
+                                parsed_content = json.loads(json_str)
+                                if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
+                                    logger.info("Intercepted inline JSON tool call. Normalizing.")
+                                    args = parsed_content["arguments"] if isinstance(parsed_content["arguments"], dict) else json.loads(parsed_content["arguments"])
+                                    args["tool"] = parsed_content["name"]
+                                    return {"reasoning": reasoning, "action": args}
+                            except Exception:
+                                pass
+
+                    # 5b. XML tool-call fallback: some models trained on XML tool-use
+                    #     formats emit <tool_call>, <function_call>, or <invoke> XML
+                    #     instead of JSON. Parse and normalize.
+                    if tools and text:
+                        xml_result = self._parse_xml_tool_call(text)
+                        if xml_result:
+                            logger.info("Intercepted XML tool call. Normalizing.")
+                            return {"reasoning": reasoning, "action": xml_result}
+
+                    # 6. Legacy JSON path (no tools passed, or fallback)
+                    return self._clean_json(text or reasoning, thought_sig=None)
 
 
     def _clean_json(self, text_response, thought_sig=None):

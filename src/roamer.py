@@ -17,6 +17,8 @@ import json
 import argparse
 import subprocess
 import logging
+import time
+import random
 from typing import List, Dict, Any
 from datetime import datetime
 import shlex
@@ -25,7 +27,7 @@ import re
 # Third Party
 try:
     import redis
-    from openai import OpenAI
+    from openai import OpenAI, RateLimitError
 except ImportError:
     print("Missing dependencies. Run: pip install redis openai")
     sys.exit(1)
@@ -39,6 +41,7 @@ LOCAL_API_URL = os.environ.get("ROAMER_API_URL", "http://127.0.0.1:8080/v1")
 LOCAL_API_KEY = "sk-local-llama"
 
 DEFAULT_MODEL = os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder")
+FALLBACK_MODEL = os.environ.get("MODEL_ROAMER_FALLBACK", "google/gemini-2.5-flash-preview")
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "")
 MAX_TURNS = 15
 
@@ -161,17 +164,21 @@ class RoamerAgent:
         self.shell = SafeShell(target_host)
         self.output_inbox = output_inbox
         self.debug_mode = debug_mode
+        self._api_url = api_url
 
-        # Split-Brain Routing (Local vs Remote) — mirrors guppi.py / scribe.py
         raw_model = model or DEFAULT_MODEL
+        self.model, self.client = self._build_client(raw_model)
+
+    def _build_client(self, raw_model: str):
+        """Build an OpenAI client for the given model, handling local/remote routing."""
         if raw_model.startswith("local/"):
-            self.model = raw_model.replace("local/", "")
-            url = (api_url or LOCAL_API_URL).rstrip("/")
+            model = raw_model.replace("local/", "")
+            url = (self._api_url or LOCAL_API_URL).rstrip("/")
             api_key = LOCAL_API_KEY
             extra_headers = {}
         else:
-            self.model = raw_model
-            url = (api_url or OPENROUTER_BASE_URL).rstrip("/")
+            model = raw_model
+            url = (self._api_url or OPENROUTER_BASE_URL).rstrip("/")
             api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
             if not api_key:
                 logger.error("FATAL: No remote API key configured (OPENAI_API_KEY or OPENROUTER_API_KEY).")
@@ -180,8 +187,8 @@ class RoamerAgent:
                 "HTTP-Referer": OPENROUTER_SITE_URL,
                 "X-Title": OPENROUTER_APP_NAME,
             }
-
-        self.client = OpenAI(base_url=url, api_key=api_key, default_headers=extra_headers)
+        client = OpenAI(base_url=url, api_key=api_key, default_headers=extra_headers)
+        return model, client
         
         self.history = [
             {"role": "system", "content": self._build_system_prompt(target_host)}
@@ -218,42 +225,75 @@ PROTOCOL:
         for turn in range(MAX_TURNS):
             logger.info(f"Turn {turn+1}/{MAX_TURNS}")
             
-            # 1. Get LLM Response
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.history,
-                    tools=self._get_tool_schema(),
-                    tool_choice="auto",
-                    temperature=0.1 # Low temp for precise logic
-                )
-                msg = response.choices[0].message
+            # 1. Get LLM Response (with retry + fallback)
+            models_to_try = [self.model]
+            if FALLBACK_MODEL and FALLBACK_MODEL != self.model:
+                models_to_try.append(FALLBACK_MODEL)
 
-                # Token usage telemetry
-                if response.usage and DEFAULT_REDIS_URL:
+            response = None
+            for current_model in models_to_try:
+                if current_model != self.model:
+                    logger.warning(f"Falling back to {current_model} after rate limit exhaustion.")
+                    self.model, self.client = self._build_client(current_model)
+
+                for attempt in range(3):
                     try:
-                        u = response.usage
-                        ctx_limit = CONTEXT_LIMITS.get(self.model, DEFAULT_CONTEXT_LIMIT)
-                        total = u.total_tokens or 0
-                        r_telem = redis.from_url(DEFAULT_REDIS_URL, decode_responses=True)
-                        r_telem.xadd("volition:token_usage", {
-                            "source": "roamer",
-                            "agent": f"roamer-{self.shell.target_host}",
-                            "model": self.model,
-                            "prompt_tokens": str(u.prompt_tokens or 0),
-                            "completion_tokens": str(u.completion_tokens or 0),
-                            "total_tokens": str(total),
-                            "context_limit": str(ctx_limit),
-                            "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
-                            "ts": datetime.utcnow().isoformat()
-                        })
-                        r_telem.close()
-                    except Exception:
-                        pass
+                        time.sleep(1)  # Pacing delay before each request
+                        response = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=self.history,
+                            tools=self._get_tool_schema(),
+                            tool_choice="auto",
+                            temperature=0.1
+                        )
+                        break  # Success
+                    except RateLimitError as e:
+                        if attempt < 2:
+                            retry_after = None
+                            if hasattr(e, 'response') and e.response is not None:
+                                retry_after = e.response.headers.get("retry-after")
+                            if retry_after:
+                                delay = float(retry_after)
+                            else:
+                                delay = 0.5 * (2 ** attempt)
+                                delay = delay * (0.9 + random.random() * 0.2)
+                            logger.warning(f"Rate limited (429) on {self.model} (attempt {attempt + 1}/3), retrying in {delay:.2f}s")
+                            time.sleep(delay)
+                        # On final attempt, break to try next model (or give up)
+                    except Exception as e:
+                        self._report_failure(f"LLM API Failure: {e}")
+                        return
 
-            except Exception as e:
-                self._report_failure(f"LLM API Failure: {e}")
+                if response:
+                    break  # Got a response, no need to try fallback
+
+            if not response:
+                self._report_failure("Rate limit exceeded on all models after retries.")
                 return
+
+            msg = response.choices[0].message
+
+            # Token usage telemetry
+            if response.usage and DEFAULT_REDIS_URL:
+                try:
+                    u = response.usage
+                    ctx_limit = CONTEXT_LIMITS.get(self.model, DEFAULT_CONTEXT_LIMIT)
+                    total = u.total_tokens or 0
+                    r_telem = redis.from_url(DEFAULT_REDIS_URL, decode_responses=True)
+                    r_telem.xadd("volition:token_usage", {
+                        "source": "roamer",
+                        "agent": f"roamer-{self.shell.target_host}",
+                        "model": self.model,
+                        "prompt_tokens": str(u.prompt_tokens or 0),
+                        "completion_tokens": str(u.completion_tokens or 0),
+                        "total_tokens": str(total),
+                        "context_limit": str(ctx_limit),
+                        "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
+                        "ts": datetime.utcnow().isoformat()
+                    })
+                    r_telem.close()
+                except Exception:
+                    pass
 
             # Normalize assistant message into a plain dict for history
             assistant_entry = {
