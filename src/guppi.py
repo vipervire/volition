@@ -1885,6 +1885,9 @@ class GuppiDaemon:
                     # 6. Legacy JSON path (no tools passed, or fallback)
                     return self._clean_json(text or reasoning, thought_sig=None)
 
+            # Loop exited via break (e.g. FALLBACK_IMMEDIATE on 429) — return error so caller can fallback
+            return {"reasoning": "API Error: 429", "action": {"tool": "hibernate"}}
+
 
     def _clean_json(self, text_response, thought_sig=None):
         try:
