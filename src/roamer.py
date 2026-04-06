@@ -27,7 +27,7 @@ import re
 # Third Party
 try:
     import redis
-    from openai import OpenAI, RateLimitError
+    from openai import OpenAI, RateLimitError, APIStatusError
 except ImportError:
     print("Missing dependencies. Run: pip install redis openai")
     sys.exit(1)
@@ -43,6 +43,8 @@ LOCAL_API_KEY = "sk-local-llama"
 DEFAULT_MODEL = os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder")
 FALLBACK_MODEL = os.environ.get("MODEL_ROAMER_FALLBACK", "google/gemini-2.5-flash-preview")
 FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
+API_RETRY_ATTEMPTS = int(os.environ.get("API_RETRY_ATTEMPTS", 4))
+API_RETRY_BASE = float(os.environ.get("API_RETRY_BASE", 5.0))
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "")
 MAX_TURNS = 15
 
@@ -227,7 +229,7 @@ PROTOCOL:
                     logger.warning(f"Falling back to {current_model} after rate limit exhaustion.")
                     self.model, self.client = self._build_client(current_model)
 
-                for attempt in range(3):
+                for attempt in range(API_RETRY_ATTEMPTS):
                     try:
                         time.sleep(1)  # Pacing delay before each request
                         response = self.client.chat.completions.create(
@@ -242,18 +244,24 @@ PROTOCOL:
                         if FALLBACK_IMMEDIATE and current_model != FALLBACK_MODEL:
                             logger.warning(f"Rate limited (429) on {self.model} — FALLBACK_IMMEDIATE set, skipping retries.")
                             break
-                        if attempt < 2:
+                        if attempt < API_RETRY_ATTEMPTS - 1:
                             retry_after = None
                             if hasattr(e, 'response') and e.response is not None:
                                 retry_after = e.response.headers.get("retry-after")
                             if retry_after:
                                 delay = float(retry_after)
                             else:
-                                delay = 0.5 * (2 ** attempt)
+                                delay = API_RETRY_BASE * (2 ** attempt)
                                 delay = delay * (0.9 + random.random() * 0.2)
-                            logger.warning(f"Rate limited (429) on {self.model} (attempt {attempt + 1}/3), retrying in {delay:.2f}s")
+                            logger.warning(f"Rate limited (429) on {self.model} (attempt {attempt + 1}/{API_RETRY_ATTEMPTS}), retrying in {delay:.2f}s")
                             time.sleep(delay)
                         # On final attempt, break to try next model (or give up)
+                    except APIStatusError as e:
+                        if 500 <= e.status_code <= 599:
+                            logger.error(f"Provider 5xx ({e.status_code}) on {self.model}. Breaking to fallback.")
+                            break  # Trigger model fallback
+                        self._report_failure(f"LLM API Failure: {e}")
+                        return
                     except Exception as e:
                         self._report_failure(f"LLM API Failure: {e}")
                         return

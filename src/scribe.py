@@ -44,6 +44,8 @@ VECTOR_DB_PATH = Path(os.environ.get("MEMORY_DIR", "./memory")) / "vector.db"
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openrouter") # "google" or "openrouter"
 MODEL_SCRIBE_FALLBACK = os.environ.get("MODEL_SCRIBE_FALLBACK", "google/gemini-2.5-flash-preview")
 FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
+API_RETRY_ATTEMPTS = int(os.environ.get("API_RETRY_ATTEMPTS", 4))
+API_RETRY_BASE = float(os.environ.get("API_RETRY_BASE", 5.0))
 
 # Google
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -118,29 +120,38 @@ async def run_llm_generation(model_name: str, prompt_text: str, redis_url: str =
 
     async with aiohttp.ClientSession() as session:
         # Bumped timeout to 1200s (20 mins) specifically to account for Nanbeige's deep thinking
-        last_429_error = None
-        for attempt in range(3):
+        last_error = None
+        for attempt in range(API_RETRY_ATTEMPTS):
             async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
                 if resp.status == 429:
-                    last_429_error = f"API Error 429 (rate limited)"
+                    last_error = f"API Error 429 (rate limited)"
                     if FALLBACK_IMMEDIATE and actual_model != MODEL_SCRIBE_FALLBACK:
                         logger.warning(f"Rate limited (429) on {actual_model} — FALLBACK_IMMEDIATE set, skipping retries.")
                         return await run_llm_generation(MODEL_SCRIBE_FALLBACK, prompt_text, redis_url=redis_url)
-                    if attempt < 2:
+                    if attempt < API_RETRY_ATTEMPTS - 1:
                         retry_after = resp.headers.get("Retry-After")
                         if retry_after:
                             delay = float(retry_after)
                         else:
-                            delay = 0.5 * (2 ** attempt)
+                            delay = API_RETRY_BASE * (2 ** attempt)
                             delay = delay * (0.9 + random.random() * 0.2)
-                        logger.warning(f"Rate limited (429) on {actual_model} (attempt {attempt + 1}/3), retrying in {delay:.2f}s")
+                        logger.warning(f"Rate limited (429) on {actual_model} (attempt {attempt + 1}/{API_RETRY_ATTEMPTS}), retrying in {delay:.2f}s")
                         await asyncio.sleep(delay)
                         continue
                     # Retries exhausted — try fallback model
                     if actual_model != MODEL_SCRIBE_FALLBACK:
                         logger.warning(f"Rate limit exhausted on {actual_model}. Falling back to {MODEL_SCRIBE_FALLBACK}.")
                         return await run_llm_generation(MODEL_SCRIBE_FALLBACK, prompt_text, redis_url=redis_url)
-                    raise Exception(last_429_error)
+                    raise Exception(last_error)
+
+                if 500 <= resp.status <= 599:
+                    err = await resp.text()
+                    last_error = f"API Error {resp.status}: {err}"
+                    logger.error(f"Provider 5xx on {actual_model}: {resp.status}")
+                    if actual_model != MODEL_SCRIBE_FALLBACK:
+                        logger.warning(f"5xx error on {actual_model}. Falling back to {MODEL_SCRIBE_FALLBACK}.")
+                        return await run_llm_generation(MODEL_SCRIBE_FALLBACK, prompt_text, redis_url=redis_url)
+                    raise Exception(last_error)
 
                 if resp.status != 200:
                     err = await resp.text()
