@@ -104,6 +104,8 @@ REDIS_RETRY_ATTEMPTS = int(os.environ.get("REDIS_RETRY_ATTEMPTS", 3))
 REDIS_RETRY_BASE = float(os.environ.get("REDIS_RETRY_BASE", 0.5))
 REDIS_RECONNECT_BASE = float(os.environ.get("REDIS_RECONNECT_BASE", 1.0))
 REDIS_RECONNECT_MAX_DELAY = float(os.environ.get("REDIS_RECONNECT_MAX_DELAY", 30.0))
+API_RETRY_ATTEMPTS = int(os.environ.get("API_RETRY_ATTEMPTS", 4))
+API_RETRY_BASE = float(os.environ.get("API_RETRY_BASE", 5.0))
 FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
 
 # Lock Config
@@ -1663,10 +1665,27 @@ class GuppiDaemon:
         # Everything routes through the OpenAI-compatible endpoint now
         is_pro = (model_id == MODEL_PRO)
         result = await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro, tools=tools)
-        # Fallback to MODEL_FALLBACK if rate-limited after exhausting retries
-        if "API Error: 429" in result.get("reasoning", "") and model_id != MODEL_FALLBACK:
-            logger.warning(f"Primary model {model_id} rate-limited. Falling back to {MODEL_FALLBACK}.")
-            result = await self._call_openai_compat(MODEL_FALLBACK, prompt_text, is_pro=False, tools=tools)
+        # Fallback to MODEL_FALLBACK on rate-limit or provider 5xx errors
+        reasoning = result.get("reasoning", "")
+        _retriable = ("API Error: 429" in reasoning or
+                      "API Error: 500" in reasoning or
+                      "API Error: 502" in reasoning or
+                      "API Error: 503" in reasoning)
+        if _retriable and model_id != MODEL_FALLBACK:
+            logger.warning(f"Primary model {model_id} failed ({reasoning[:40]}). Falling back to {MODEL_FALLBACK}.")
+            fallback_is_pro = (MODEL_FALLBACK == MODEL_PRO)
+            result = await self._call_openai_compat(MODEL_FALLBACK, prompt_text, is_pro=fallback_is_pro, tools=tools)
+            # Alert if fallback also failed
+            if "API Error:" in result.get("reasoning", ""):
+                logger.error(f"Fallback model {MODEL_FALLBACK} also failed. Both models unavailable.")
+                try:
+                    await self.r.lpush(f"inbox:{self.abe_name}", json.dumps({
+                        "type": "SystemAlert",
+                        "event": "ModelUnavailable",
+                        "content": f"Both primary ({model_id}) and fallback ({MODEL_FALLBACK}) models failed. Forcing hibernation."
+                    }))
+                except Exception:
+                    pass
         return result
 
     async def _call_openai_compat(self, model_id, prompt, is_pro=False, tools=None):
@@ -1756,20 +1775,20 @@ class GuppiDaemon:
             payload["temperature"] = 0.6
 
         async with aiohttp.ClientSession() as session:
-            for attempt in range(REDIS_RETRY_ATTEMPTS):
+            for attempt in range(API_RETRY_ATTEMPTS):
                 async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
                     if resp.status == 429:
                         if FALLBACK_IMMEDIATE:
                             logger.warning(f"Rate limited (429) on {actual_model} — FALLBACK_IMMEDIATE set, skipping retries.")
                             break
-                        if attempt < REDIS_RETRY_ATTEMPTS - 1:
+                        if attempt < API_RETRY_ATTEMPTS - 1:
                             retry_after = resp.headers.get("Retry-After")
                             if retry_after:
                                 delay = float(retry_after)
                             else:
-                                delay = REDIS_RETRY_BASE * (2 ** attempt)
+                                delay = API_RETRY_BASE * (2 ** attempt)
                                 delay = delay * (0.9 + random.random() * 0.2)
-                            logger.warning(f"Rate limited (429) on {actual_model} (attempt {attempt + 1}/{REDIS_RETRY_ATTEMPTS}), retrying in {delay:.2f}s")
+                            logger.warning(f"Rate limited (429) on {actual_model} (attempt {attempt + 1}/{API_RETRY_ATTEMPTS}), retrying in {delay:.2f}s")
                             await asyncio.sleep(delay)
                             continue
                         # Retries exhausted — fall through to error handler
