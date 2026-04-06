@@ -102,6 +102,8 @@ SSH_CMD_TIMEOUT = float(os.environ.get("SSH_CMD_TIMEOUT", 300.0))
 SUBPROC_TIMEOUT = float(os.environ.get("SUBPROC_TIMEOUT", 150.0))
 REDIS_RETRY_ATTEMPTS = int(os.environ.get("REDIS_RETRY_ATTEMPTS", 3))
 REDIS_RETRY_BASE = float(os.environ.get("REDIS_RETRY_BASE", 0.5))
+REDIS_RECONNECT_BASE = float(os.environ.get("REDIS_RECONNECT_BASE", 1.0))
+REDIS_RECONNECT_MAX_DELAY = float(os.environ.get("REDIS_RECONNECT_MAX_DELAY", 30.0))
 FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
 
 # Lock Config
@@ -143,6 +145,16 @@ async def retry_async(func, *args, attempts=REDIS_RETRY_ATTEMPTS, **kwargs):
             if attempt == attempts: break
             await asyncio.sleep(delay)
     raise last_ex
+
+
+def _is_redis_connection_error(exc):
+    return isinstance(exc, (
+        redis.ConnectionError,
+        redis.TimeoutError,
+        ConnectionRefusedError,
+        ConnectionResetError,
+        OSError,
+    ))
 
 
 class LLMOutputError(Exception):
@@ -249,6 +261,7 @@ class GuppiDaemon:
         self.internal_queue = f"internal:{self.abe_name}"
 
         # 3. State
+        self._reconnect_failures = 0
         self.running_subprocesses: Dict[str, asyncio.subprocess.Process] = {}
         self.log_buffer: List[Dict] = []
         self.log_lock = asyncio.Lock()
@@ -1192,6 +1205,15 @@ class GuppiDaemon:
             except: logger.exception("Failed local event log")
         return evt_id
 
+    async def _reconnect_redis(self):
+        try:
+            await self.r.close()
+        except Exception:
+            pass
+        self.r = redis.from_url(REDIS_URL, decode_responses=True)
+        self.governor.r = self.r
+        logger.info("Redis reconnected.")
+
     async def _handle_alarm(self, orientation_data=None):
         """Checks todo.db for due tasks and wakes the agent if needed."""
         now_ts = datetime.utcnow().isoformat()
@@ -1438,7 +1460,19 @@ class GuppiDaemon:
 
             except Exception as e:
                 logger.error(f"Main Loop Error: {e}")
-                await asyncio.sleep(5)
+                if _is_redis_connection_error(e):
+                    delay = min(REDIS_RECONNECT_BASE * (2 ** self._reconnect_failures), REDIS_RECONNECT_MAX_DELAY)
+                    delay *= (0.9 + random.random() * 0.2)
+                    logger.warning(f"Redis connection lost. Reconnecting in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
+                    try:
+                        await self._reconnect_redis()
+                        self._reconnect_failures = 0
+                    except Exception as re:
+                        self._reconnect_failures += 1
+                        logger.error(f"Reconnect failed: {re}")
+                else:
+                    await asyncio.sleep(5)
 
     # --- COGNITION (Atomic + Governor) ---
 
