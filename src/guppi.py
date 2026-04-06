@@ -1667,14 +1667,10 @@ class GuppiDaemon:
         result = await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro, tools=tools)
         # Fallback to MODEL_FALLBACK on rate-limit or provider 5xx errors
         reasoning = result.get("reasoning", "")
-        _retriable = ("API Error: 429" in reasoning or
-                      "API Error: 500" in reasoning or
-                      "API Error: 502" in reasoning or
-                      "API Error: 503" in reasoning)
+        _retriable = bool(re.search(r"API Error: (429|5\d\d)", reasoning))
         if _retriable and model_id != MODEL_FALLBACK:
             logger.warning(f"Primary model {model_id} failed ({reasoning[:40]}). Falling back to {MODEL_FALLBACK}.")
-            fallback_is_pro = (MODEL_FALLBACK == MODEL_PRO)
-            result = await self._call_openai_compat(MODEL_FALLBACK, prompt_text, is_pro=fallback_is_pro, tools=tools)
+            result = await self._call_openai_compat(MODEL_FALLBACK, prompt_text, is_pro=is_pro, tools=tools)
             # Alert if fallback also failed
             if "API Error:" in result.get("reasoning", ""):
                 logger.error(f"Fallback model {MODEL_FALLBACK} also failed. Both models unavailable.")
