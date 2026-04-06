@@ -42,6 +42,7 @@ LOCAL_API_KEY = "sk-local-llama"
 
 DEFAULT_MODEL = os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder")
 FALLBACK_MODEL = os.environ.get("MODEL_ROAMER_FALLBACK", "google/gemini-2.5-flash-preview")
+FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "")
 MAX_TURNS = 15
 
@@ -248,6 +249,9 @@ PROTOCOL:
                         )
                         break  # Success
                     except RateLimitError as e:
+                        if FALLBACK_IMMEDIATE and current_model != FALLBACK_MODEL:
+                            logger.warning(f"Rate limited (429) on {self.model} — FALLBACK_IMMEDIATE set, skipping retries.")
+                            break
                         if attempt < 2:
                             retry_after = None
                             if hasattr(e, 'response') and e.response is not None:

@@ -102,6 +102,7 @@ SSH_CMD_TIMEOUT = float(os.environ.get("SSH_CMD_TIMEOUT", 300.0))
 SUBPROC_TIMEOUT = float(os.environ.get("SUBPROC_TIMEOUT", 150.0))
 REDIS_RETRY_ATTEMPTS = int(os.environ.get("REDIS_RETRY_ATTEMPTS", 3))
 REDIS_RETRY_BASE = float(os.environ.get("REDIS_RETRY_BASE", 0.5))
+FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
 
 # Lock Config
 DEFAULT_LOCK_TTL_MS = 60000 
@@ -1741,6 +1742,9 @@ class GuppiDaemon:
             for attempt in range(REDIS_RETRY_ATTEMPTS):
                 async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
                     if resp.status == 429:
+                        if FALLBACK_IMMEDIATE:
+                            logger.warning(f"Rate limited (429) on {actual_model} — FALLBACK_IMMEDIATE set, skipping retries.")
+                            break
                         if attempt < REDIS_RETRY_ATTEMPTS - 1:
                             retry_after = resp.headers.get("Retry-After")
                             if retry_after:

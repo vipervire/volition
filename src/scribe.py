@@ -53,6 +53,7 @@ VECTOR_DB_PATH = Path(os.environ.get("MEMORY_DIR", "./memory")) / "vector.db"
 # v6.4 Provider Config
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openrouter") # "google" or "openrouter"
 MODEL_SCRIBE_FALLBACK = os.environ.get("MODEL_SCRIBE_FALLBACK", "google/gemini-2.5-flash-preview")
+FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
 
 # Google
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -132,6 +133,9 @@ async def run_llm_generation(model_name: str, prompt_text: str, redis_url: str =
             async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
                 if resp.status == 429:
                     last_429_error = f"API Error 429 (rate limited)"
+                    if FALLBACK_IMMEDIATE and actual_model != MODEL_SCRIBE_FALLBACK:
+                        logger.warning(f"Rate limited (429) on {actual_model} — FALLBACK_IMMEDIATE set, skipping retries.")
+                        return await run_llm_generation(MODEL_SCRIBE_FALLBACK, prompt_text, redis_url=redis_url)
                     if attempt < 2:
                         retry_after = resp.headers.get("Retry-After")
                         if retry_after:
