@@ -1,0 +1,21 @@
+{
+    "default_context_limit": 32768,
+    "models": {
+        "google/gemini-3-flash-preview": 1048576,
+        "google/gemini-2.5-flash-preview": 1048576,
+        "google/gemini-2.5-pro-preview": 1048576,
+        "mistral": 32768,
+        "qwen-2.5-14b-coder": 32768,
+        "nanbeige-4.1-3b": 8192,
+        "nomic-embed-text": 8192,
+        "google/gemini-embedding-001": 8192,
+        "minimax/minimax-m2.5:free": 196608,
+        "stepfun/step-3.5-flash:free": 256000,
+        "deepseek3.2": 163840,
+        "qwen/qwen3.5-35b-a3b": 262144,
+        "qwen/qwen3.5-9b": 256000,
+        "qwen/qwen2.5-coder-7b-instruct": 32768,
+        "qwen/qwen3.5-27b": 262144,
+        "qwen/qwen3.5-flash-02-23": 1000000
+    }
+}

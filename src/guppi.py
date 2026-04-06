@@ -112,24 +112,7 @@ STREAM_DENY_LIST = ["volition:action_log", "volition:heartbeat", "volition:log_s
 HEARTBEAT_STALE_THRESHOLD = 180   # seconds; matches heartbeat-monitor.py
 ACTIVE_ABES_CACHE_TTL = 120       # seconds
 
-CONTEXT_LIMITS = {
-    "google/gemini-3-flash-preview": 1_048_576,
-    "google/gemini-2.5-flash-preview": 1_048_576,
-    "google/gemini-2.5-pro-preview": 1_048_576,
-    "mistral": 32_768,
-    "qwen-2.5-14b-coder": 32_768,
-    "nanbeige-4.1-3b": 8_192,
-    "nomic-embed-text": 8_192,
-    "minimax/minimax-m2.5:free": 196_608,
-    "stepfun/step-3.5-flash:free": 256_000,
-    "deepseek3.2": 163_840,
-    "qwen/qwen3.5-35b-a3b": 262_144,
-    "qwen/qwen3.5-9b": 256_000,
-    "qwen/qwen2.5-coder-7b-instruct": 32_768,
-    "qwen/qwen3.5-27b": 262_144,
-    "qwen/qwen3.5-flash-02-23": 1_000_000,
-}
-DEFAULT_CONTEXT_LIMIT = 32_768
+from context_limits import CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT
 FLASH_FORBIDDEN_TOOLS = {"local_shell", "local_write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
 
 # Logging Setup

@@ -549,6 +549,8 @@ WantedBy=multi-user.target
     print(f"2. Copy code files:")
     print(f"   - {SRC_DIR}/gpu-worker.py  ->  /opt/volition/gpu-worker.py")
     print(f"   - {SRC_DIR}/ear.py         ->  /opt/volition/ear.py")
+    print(f"   - {SRC_DIR}/context_limits.py  ->  /opt/volition/context_limits.py")
+    print(f"   - {SRC_DIR}/config/        ->  /opt/volition/config/")
     print()
     print(f"3. Create Python environment:")
     print(f"   {CYAN}python3 -m venv /opt/volition/venv{RESET}")
@@ -684,10 +686,18 @@ WantedBy=multi-user.target
     print(f"Injecting Tools ({SRC_DIR} -> /root/bin)...")
     for item in SRC_DIR.glob("*"):
         if item.is_file():
-            if item.name == "guppi.service": continue 
-            # Note: We push spawn_abe_lxc.sh to the container too, just for reference/backup, 
+            if item.name == "guppi.service": continue
+            # Note: We push spawn_abe_lxc.sh to the container too, just for reference/backup,
             # even though the active one lives on the host.
             run_cmd(["pct", "push", vmid, str(item), f"/root/bin/{item.name}"])
+
+    config_dir = SRC_DIR / "config"
+    if config_dir.is_dir():
+        print(f"Injecting Config ({config_dir} -> /root/bin/config)...")
+        run_cmd(["pct", "exec", vmid, "--", "mkdir", "-p", "/root/bin/config"])
+        for item in config_dir.glob("*"):
+            if item.is_file():
+                run_cmd(["pct", "push", vmid, str(item), f"/root/bin/config/{item.name}"])
 
     # 4.3 Push Docs
     print(f"Injecting Cortex ({DOCS_DIR} -> /root/docs)...")

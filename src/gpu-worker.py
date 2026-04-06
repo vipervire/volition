@@ -52,15 +52,7 @@ OPENROUTER_MODEL_SUMMARIZE = os.environ.get(
     "google/gemini-3-flash-preview"
 )
 
-CONTEXT_LIMITS = {
-    "google/gemini-embedding-001": 8_192,
-    "google/gemini-3-flash-preview": 1_048_576,
-    "mistral": 32_768,
-    "nomic-embed-text": 8_192,
-    "minimax/minimax-m2.5:free": 196_608,
-    "stepfun/step-3.5-flash:free": 256_000,
-}
-DEFAULT_CONTEXT_LIMIT = 32_768
+from context_limits import CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT
 OPENROUTER_MODEL_EMBED = os.environ.get(
     "OPENROUTER_MODEL_EMBED",
     "google/gemini-embedding-001"

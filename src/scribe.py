@@ -37,17 +37,7 @@ import redis.asyncio as redis
 # --- Configuration ---
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL")
 
-CONTEXT_LIMITS = {
-    "google/gemini-3-flash-preview": 1_048_576,
-    "google/gemini-2.5-flash-preview": 1_048_576,
-    "google/gemini-2.5-pro-preview": 1_048_576,
-    "mistral": 32_768,
-    "qwen-2.5-14b-coder": 32_768,
-    "nanbeige-4.1-3b": 8_192,
-    "minimax/minimax-m2.5:free": 196_608,
-    "stepfun/step-3.5-flash:free": 256_000,
-}
-DEFAULT_CONTEXT_LIMIT = 32_768
+from context_limits import CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT
 VECTOR_DB_PATH = Path(os.environ.get("MEMORY_DIR", "./memory")) / "vector.db"
 
 # v6.4 Provider Config
