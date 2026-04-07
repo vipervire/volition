@@ -35,6 +35,8 @@ import redis.asyncio as redis
 
 # --- Configuration ---
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL")
+
+from context_limits import CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT
 VECTOR_DB_PATH = Path(os.environ.get("MEMORY_DIR", "./memory")) / "vector.db"
 
 # v6.4 Provider Config

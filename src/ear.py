@@ -55,6 +55,8 @@ HEARTBEAT_TTL = 300             # How long to remember an Abe after last heartbe
 # v7.0 Stream Key
 DIGEST_STREAM_KEY = "volition:social_digests"
 
+from context_limits import CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [EAR] - %(levelname)s - %(message)s'

@@ -39,6 +39,8 @@ DEFAULT_MODEL = os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder")
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "")
 MAX_TURNS = 15
 
+from context_limits import CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT
+
 # LOGGING
 logging.basicConfig(level=logging.INFO, format="[ROAMER] %(message)s")
 logger = logging.getLogger("roamer")

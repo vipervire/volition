@@ -49,6 +49,7 @@ OPENROUTER_MODEL_EMBED = os.environ.get(
     "google/gemini-embedding-001"
 )
 
+from context_limits import CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT
 
 # Logging
 logging.basicConfig(
