@@ -113,15 +113,34 @@ class SocialRouter:
             async with session.post(f"{OLLAMA_URL}/generate", json=payload) as resp:
                 if resp.status == 200:
                     data = await resp.json()
+                    try:
+                        prompt_toks = data.get("prompt_eval_count", 0) or 0
+                        comp_toks = data.get("eval_count", 0) or 0
+                        total = prompt_toks + comp_toks
+                        if total > 0:
+                            ctx_limit = CONTEXT_LIMITS.get(MODEL_SUMMARIZE, DEFAULT_CONTEXT_LIMIT)
+                            await self.r.xadd("volition:token_usage", {
+                                "source": "ear",
+                                "agent": "ear",
+                                "model": MODEL_SUMMARIZE,
+                                "prompt_tokens": str(prompt_toks),
+                                "completion_tokens": str(comp_toks),
+                                "total_tokens": str(total),
+                                "context_limit": str(ctx_limit),
+                                "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
+                                "ts": datetime.utcnow().isoformat()
+                            })
+                    except Exception:
+                        pass
                     return data.get("response")
                 else:
                     logger.error(f"Ollama summary failed: {resp.status}")
         except Exception as e:
             logger.error(f"Ollama connection error: {e}")
         return None
-    
 
-    async def generate_summary_openrouter(session, conversation_text):
+
+    async def generate_summary_openrouter(self, session, conversation_text):
         if not OPENROUTER_API_KEY:
             logger.error("OPENROUTER_API_KEY not set for OpenRouter summarize")
             return None
@@ -140,14 +159,17 @@ class SocialRouter:
 
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": OPENROUTER_SITE_URL,
+            "X-Title": OPENROUTER_APP_NAME,
         }
 
         try:
             async with session.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
-                json=payload
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120)
             ) as resp:
                 if resp.status != 200:
                     err = await resp.text()
@@ -155,7 +177,29 @@ class SocialRouter:
                     return None
 
                 data = await resp.json()
-                return data["choices"][0]["message"]["content"]
+                usage = data.get("usage", {})
+                if usage:
+                    try:
+                        ctx_limit = CONTEXT_LIMITS.get(OPENROUTER_MODEL_SUMMARIZE, DEFAULT_CONTEXT_LIMIT)
+                        total = usage.get("total_tokens", 0) or 0
+                        await self.r.xadd("volition:token_usage", {
+                            "source": "ear",
+                            "agent": "ear",
+                            "model": OPENROUTER_MODEL_SUMMARIZE,
+                            "prompt_tokens": str(usage.get("prompt_tokens", 0) or 0),
+                            "completion_tokens": str(usage.get("completion_tokens", 0) or 0),
+                            "total_tokens": str(total),
+                            "context_limit": str(ctx_limit),
+                            "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
+                            "ts": datetime.utcnow().isoformat()
+                        })
+                    except Exception:
+                        pass
+                choices = data.get("choices")
+                if not choices:
+                    logger.error("OpenRouter returned empty choices")
+                    return None
+                return choices[0]["message"]["content"]
 
         except Exception as e:
             logger.error(f"OpenRouter summarize exception: {e}")

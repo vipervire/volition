@@ -13,6 +13,7 @@ Role:
 """
 
 import os
+import re
 import sys
 import subprocess
 import json
@@ -20,6 +21,7 @@ import time
 import shutil
 import getpass
 import socket
+import locale
 from pathlib import Path
 
 # --- COLORS ---
@@ -101,13 +103,27 @@ def run_cmd(cmd, shell=False, check=True):
         sys.exit(1)
 
 def prompt(text, default=None):
-    if default:
+    if default is not None:
         val = input(f"{GREEN}[?]{RESET} {text} [{default}]: ").strip()
         return val if val else default
     else:
         while True:
             val = input(f"{GREEN}[?]{RESET} {text}: ").strip()
             if val: return val
+
+def find_latest_debian_template():
+    try:
+        out = run_cmd(["pveam", "available", "--section", "system"])
+    except Exception:
+        print(f"{RED}[FAIL] Unable to query pveam. Is this a Proxmox host?{RESET}")
+        sys.exit(1)
+    matches = re.findall(r'(debian-12-standard_[\d.]+-\d+_amd64\.tar\.zst)', out)
+    if not matches:
+        print(f"{RED}[FAIL] No debian-12-standard template found in pveam available.{RESET}")
+        print("Try: pveam update")
+        sys.exit(1)
+    return sorted(matches)[-1]
+
 
 def ensure_debian_template(template_name):
     print(f"{YELLOW}Checking for LXC template: {template_name}{RESET}")
@@ -130,7 +146,7 @@ def ensure_debian_template(template_name):
         print("You may need to:")
         print("  - Check internet connectivity on the Proxmox host")
         print("  - Verify storage 'local' exists and is enabled")
-        print("Try: pveam update && pveam download local debian-12-standard_12.7-1_amd64.tar.zst")
+        print(f"Try: pveam update && pveam download local {template_name}")
         sys.exit(1)
 
 
@@ -205,6 +221,9 @@ def main():
     redis_host = prompt("Redis Host", "10.0.0.0")
     redis_port = prompt("Redis Port", "6379")
     redis_pass = prompt("Redis Password", "volition")
+    print(f"{YELLOW}Installing redis-tools on host...{RESET}")
+    run_cmd(["apt-get", "install", "-y", "-qq", "redis-tools"])
+    print(f"{GREEN}[OK] redis-tools installed.{RESET}")
     check_redis_connectivity(redis_host, redis_port, redis_pass)
 
     print("\n[Search Config]")
@@ -261,10 +280,16 @@ OPENROUTER_API_KEY={openrouter_api_key}
 
 # --- Model Routing (Split-Brain) ---
 # Flash: Social, Low-Risk (Chat)
-OPENROUTER_MODEL_FLASH=google/gemini-3-flash-preview
+MODEL_FLASH=google/gemini-3-flash-preview
 # Pro: Work, High-Agency (Inbox/Tasks) - Using Thinking Model for complex tasks
 # If Gemini-3-flash-preview is listed here, it will have thinking:high set in guppi for Pro.
-OPENROUTER_MODEL_PRO=google/gemini-3-flash-preview
+MODEL_PRO=google/gemini-3-flash-preview
+
+# --- Specialist Models (uncomment to override defaults) ---
+# MODEL_SUMMARIZE=local/mistral
+# MODEL_ROAMER=qwen-2.5-14b-coder
+# MODEL_SCRIBE=local/nanbeige-4.1-3B
+# GEMINI_MODEL=gemini-3-flash-preview
 
 # --- Metadata (for OpenRouter Leaderboard) ---
 OPENROUTER_SITE_URL=https://volition.indoria.org
@@ -373,6 +398,7 @@ Environment=REDIS_PASSWORD={redis_pass}
 
 # Default: Ollama local
 Environment=EMBEDDING_BACKEND=ollama
+Environment=SUMMARIZE_BACKEND=ollama
 Environment=OLLAMA_URL=http://localhost:11434/api
 Environment=MODEL_EMBED=nomic-embed-text
 Environment=MODEL_SUMMARIZE=mistral
@@ -380,8 +406,9 @@ Environment=MODEL_SUMMARIZE=mistral
 # Optional OpenRouter fallback
 Environment=OPENROUTER_API_KEY={openrouter_api_key}
 Environment=OPENROUTER_MODEL_EMBED=google/gemini-embedding-001
+Environment=OPENROUTER_MODEL_SUMMARIZE=google/gemini-3-flash-preview
 
-ExecStart=/opt/volition/venv/bin/python /opt/volition/gpu_worker.py
+ExecStart=/opt/volition/venv/bin/python /opt/volition/gpu-worker.py
 Restart=always
 RestartSec=3
 
@@ -522,6 +549,8 @@ WantedBy=multi-user.target
     print(f"2. Copy code files:")
     print(f"   - {SRC_DIR}/gpu-worker.py  ->  /opt/volition/gpu-worker.py")
     print(f"   - {SRC_DIR}/ear.py         ->  /opt/volition/ear.py")
+    print(f"   - {SRC_DIR}/context_limits.py  ->  /opt/volition/context_limits.py")
+    print(f"   - {SRC_DIR}/config/        ->  /opt/volition/config/")
     print()
     print(f"3. Create Python environment:")
     print(f"   {CYAN}python3 -m venv /opt/volition/venv{RESET}")
@@ -582,7 +611,7 @@ WantedBy=multi-user.target
           print(f"{RED}VMID {vmid} is also in use. Aborting.{RESET}")
           sys.exit(1)
 
-    template = "debian-12-standard_12.7-1_amd64.tar.zst"
+    template = find_latest_debian_template()
     ensure_debian_template(template)
 
     print(f"{YELLOW}Creating Container...{RESET}")
@@ -657,10 +686,18 @@ WantedBy=multi-user.target
     print(f"Injecting Tools ({SRC_DIR} -> /root/bin)...")
     for item in SRC_DIR.glob("*"):
         if item.is_file():
-            if item.name == "guppi.service": continue 
-            # Note: We push spawn_abe_lxc.sh to the container too, just for reference/backup, 
+            if item.name == "guppi.service": continue
+            # Note: We push spawn_abe_lxc.sh to the container too, just for reference/backup,
             # even though the active one lives on the host.
             run_cmd(["pct", "push", vmid, str(item), f"/root/bin/{item.name}"])
+
+    config_dir = SRC_DIR / "config"
+    if config_dir.is_dir():
+        print(f"Injecting Config ({config_dir} -> /root/bin/config)...")
+        run_cmd(["pct", "exec", vmid, "--", "mkdir", "-p", "/root/bin/config"])
+        for item in config_dir.glob("*"):
+            if item.is_file():
+                run_cmd(["pct", "push", vmid, str(item), f"/root/bin/config/{item.name}"])
 
     # 4.3 Push Docs
     print(f"Injecting Cortex ({DOCS_DIR} -> /root/docs)...")
@@ -721,24 +758,6 @@ WantedBy=multi-user.target
             
         run_cmd(["pct", "push", vmid, "/tmp/guppi.service", "/etc/systemd/system/guppi.service"])
         os.remove("/tmp/guppi.service")
-            # --- 4.4.1 Redis Sanity Check (from inside container) ---
-        print(f"{CYAN}--- REDIS SANITY CHECK (Container -> Redis) ---{RESET}")
-        try:
-            out = run_cmd([
-                "pct", "exec", vmid, "--",
-                "redis-cli",
-                "-h", redis_host,
-                "-p", str(redis_port),
-                "-a", redis_pass,
-                "PING"
-            ])
-            if out.strip() != "PONG":
-                raise RuntimeError(out)
-            print(f"{GREEN}[OK] Container can reach Redis.{RESET}")
-        except Exception as e:
-            print(f"{RED}[FAIL] Container cannot reach Redis: {e}{RESET}")
-            print("Fix Redis networking/auth before continuing.")
-            sys.exit(1)
 
     else:
         print(f"{YELLOW}Warning: guppi.service not found in src/{RESET}")
@@ -775,6 +794,7 @@ BRIDGE="{bridge_id}"
         # Since the original script has `STORAGE="local"`, we try to replace that line.
         if 'STORAGE="local"' in script_content:
              script_content = script_content.replace('STORAGE="local"', f'STORAGE="{storage_id}"')
+             script_content = script_content.replace('BRIDGE="vmbr0"', f'BRIDGE="{bridge_id}"')
         else:
              # Just prepend if we can't find the exact line
              script_content = config_block + script_content
@@ -783,10 +803,22 @@ BRIDGE="{bridge_id}"
         target_path = HOST_BIN_DIR / "spawn_abe_lxc.sh"
         with open(target_path, "w") as f:
             f.write(script_content)
-        
+
         os.chmod(target_path, 0o755)
         print(f"{GREEN}Installed and Configured spawn_abe_lxc.sh to {target_path}{RESET}")
-      
+
+    advisor_src = SRC_DIR / "spawn_advisor.sh"
+
+    if advisor_src.exists():
+        script_content = advisor_src.read_text()
+        if 'STORAGE="local"' in script_content:
+            script_content = script_content.replace('STORAGE="local"', f'STORAGE="{storage_id}"')
+        target_path = HOST_BIN_DIR / "spawn_advisor.sh"
+        with open(target_path, "w") as f:
+            f.write(script_content)
+        os.chmod(target_path, 0o755)
+        print(f"{GREEN}Installed and Configured spawn_advisor.sh to {target_path}{RESET}")
+
      # --- 5. SSH CONFIGURATION ---
     print(f"\n{CYAN}--- PHASE 5: THE UMBILICAL CORD (SSH) ---{RESET}")
     print("Generating SSH identity for Abe-01...")
@@ -882,16 +914,28 @@ Host parent_node {host_hostname}
 
     # --- 5. BOOTSTRAP ---
     print(f"\n{CYAN}--- PHASE 5: AWAKENING (Bootstrap) ---{RESET}")
-    
-    bootstrap_script = """#!/bin/bash
+
+    _host_locale = locale.getlocale()[0]
+    host_lang = f"{_host_locale}.UTF-8" if _host_locale else "en_US.UTF-8"
+
+    bootstrap_script = f"""#!/bin/bash
 set -e
+export LANG=C
+export LC_ALL=C
 export DEBIAN_FRONTEND=noninteractive
 
 echo "[*] Updating Apt..."
 apt-get update -qq
 
 echo "[*] Installing Dependencies..."
-apt-get install -y -qq python3-full python3-pip python3-venv git redis-tools curl nano
+apt-get install -y -qq locales python3-full python3-pip python3-venv python3-redis git redis-tools curl nano
+
+echo "[*] Configuring Locale..."
+sed -i 's/^# *{host_lang}/{host_lang}/' /etc/locale.gen
+locale-gen {host_lang}
+update-locale LANG={host_lang} LC_ALL={host_lang}
+export LANG={host_lang}
+export LC_ALL={host_lang}
 
 echo "[*] Creating Venv..."
 if [ ! -d "/root/venv" ]; then
@@ -901,7 +945,7 @@ fi
 echo "[*] Installing Python Libs..."
 /root/venv/bin/pip install --upgrade pip
 # Core Volition Requirements
-/root/venv/bin/pip install aiosqlite redis asyncssh aiohttp requests chromadb google-genai trafilatura
+/root/venv/bin/pip install aiosqlite redis asyncssh aiohttp requests chromadb google-genai trafilatura openai
 
 echo "[*] Enabling Service..."
 systemctl daemon-reload
@@ -915,13 +959,32 @@ echo "[SUCCESS] Bootstrap Complete."
 """
     with open("/tmp/bootstrap_volition.sh", "w") as f:
         f.write(bootstrap_script)
-    
+
     run_cmd(["pct", "push", vmid, "/tmp/bootstrap_volition.sh", "/root/bootstrap_volition.sh"])
-    
+
     print(f"{YELLOW}Running internal bootstrap (this may take a minute)...{RESET}")
     print(run_cmd(["pct", "exec", vmid, "--", "bash", "/root/bootstrap_volition.sh"]))
-    
+
     os.remove("/tmp/bootstrap_volition.sh")
+
+    # --- Redis Sanity Check (from inside container, after redis-tools is installed) ---
+    print(f"{CYAN}--- REDIS SANITY CHECK (Container -> Redis) ---{RESET}")
+    try:
+        out = run_cmd([
+            "pct", "exec", vmid, "--",
+            "redis-cli",
+            "-h", redis_host,
+            "-p", str(redis_port),
+            "-a", redis_pass,
+            "PING"
+        ])
+        if out.strip() != "PONG":
+            raise RuntimeError(out)
+        print(f"{GREEN}[OK] Container can reach Redis.{RESET}")
+    except Exception as e:
+        print(f"{RED}[FAIL] Container cannot reach Redis: {e}{RESET}")
+        print("Fix Redis networking/auth before continuing.")
+        sys.exit(1)
 
     print(f"\n{GREEN}=== GENESIS COMPLETE ==={RESET}")
     print(f"Container: {agent_name} ({vmid})")
@@ -956,7 +1019,7 @@ echo "[SUCCESS] Bootstrap Complete."
 
     print("\n   c) Create a Python environment:")
     print(f"      {CYAN}python3 -m venv /opt/volition/venv{RESET}")
-    print(f"      {CYAN}/opt/volition/venv/bin/pip install fastapi uvicorn redis aiohttp jinja2{RESET}")
+    print(f"      {CYAN}/opt/volition/venv/bin/pip install fastapi uvicorn uvicorn[standard] redis aiohttp jinja2{RESET}")
 
     print("\n   d) Install the systemd service:")
     print(f"      {CYAN}cp dashboard/volition-dashboard.service /etc/systemd/system/{RESET}")
