@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import sys
 import logging
 import aiohttp
@@ -41,6 +42,10 @@ VECTOR_DB_PATH = Path(os.environ.get("MEMORY_DIR", "./memory")) / "vector.db"
 
 # v6.4 Provider Config
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openrouter") # "google" or "openrouter"
+MODEL_SCRIBE_FALLBACK = os.environ.get("MODEL_SCRIBE_FALLBACK", "google/gemini-2.5-flash-preview")
+FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
+API_RETRY_ATTEMPTS = int(os.environ.get("API_RETRY_ATTEMPTS", 4))
+API_RETRY_BASE = float(os.environ.get("API_RETRY_BASE", 5.0))
 
 # Google
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -78,7 +83,7 @@ async def push_result(redis_url: str, inbox: str, event_type: str, content: Any,
         # If we can't report back, we exit non-zero so GUPPI knows (if it was tracking us)
         sys.exit(1)
 
-async def run_llm_generation(model_name: str, prompt_text: str) -> str:
+async def run_llm_generation(model_name: str, prompt_text: str, redis_url: str = None) -> str:
     """Unified OpenAI-Compatible execution for Scribe."""
     model_id = model_name
     use_thinking = ":thinking" in model_id
@@ -115,35 +120,90 @@ async def run_llm_generation(model_name: str, prompt_text: str) -> str:
 
     async with aiohttp.ClientSession() as session:
         # Bumped timeout to 1200s (20 mins) specifically to account for Nanbeige's deep thinking
-        async with session.post(url, headers=headers, json=payload, timeout=1200) as resp:
-            if resp.status != 200:
-                err = await resp.text()
-                raise Exception(f"API Error {resp.status}: {err}")
-            
-            data = await resp.json()
-            message = data["choices"][0]["message"]
-            text = message.get("content", "")
-            
-            # Extract reasoning to prevent it from bleeding into the final report
-            reasoning = message.get("reasoning_content", "")
-            if not reasoning and "<think>" in text:
-                think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
-                if think_match:
-                    reasoning = think_match.group(1).strip()
-                    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-            
-            # Persist Scribe's internal monologue
-            if reasoning:
-                today_str = datetime.utcnow().strftime("%Y-%m-%d")
-                abe_root = Path(os.environ.get("ABE_ROOT", Path.home()))
-                thoughts_file = abe_root / f"logs/thoughts/scribe-{today_str}.thot"
-                thoughts_file.parent.mkdir(parents=True, exist_ok=True)
-                
-                with open(thoughts_file, "a", encoding="utf-8") as f:
-                    ts = datetime.utcnow().isoformat()
-                    f.write(f"\n--- [SCRIBE THOUGHT BURST: {ts} | Model: {model_id}] ---\n{reasoning}\n--- [END] ---\n")
-            
-            return text
+        last_error = None
+        for attempt in range(API_RETRY_ATTEMPTS):
+            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
+                if resp.status == 429:
+                    last_error = f"API Error 429 (rate limited)"
+                    if FALLBACK_IMMEDIATE and actual_model != MODEL_SCRIBE_FALLBACK:
+                        logger.warning(f"Rate limited (429) on {actual_model} — FALLBACK_IMMEDIATE set, skipping retries.")
+                        return await run_llm_generation(MODEL_SCRIBE_FALLBACK, prompt_text, redis_url=redis_url)
+                    if attempt < API_RETRY_ATTEMPTS - 1:
+                        retry_after = resp.headers.get("Retry-After")
+                        if retry_after:
+                            delay = float(retry_after)
+                        else:
+                            delay = API_RETRY_BASE * (2 ** attempt)
+                            delay = delay * (0.9 + random.random() * 0.2)
+                        logger.warning(f"Rate limited (429) on {actual_model} (attempt {attempt + 1}/{API_RETRY_ATTEMPTS}), retrying in {delay:.2f}s")
+                        await asyncio.sleep(delay)
+                        continue
+                    # Retries exhausted — try fallback model
+                    if actual_model != MODEL_SCRIBE_FALLBACK:
+                        logger.warning(f"Rate limit exhausted on {actual_model}. Falling back to {MODEL_SCRIBE_FALLBACK}.")
+                        return await run_llm_generation(MODEL_SCRIBE_FALLBACK, prompt_text, redis_url=redis_url)
+                    raise Exception(last_error)
+
+                if 500 <= resp.status <= 599:
+                    err = await resp.text()
+                    last_error = f"API Error {resp.status}: {err}"
+                    logger.error(f"Provider 5xx on {actual_model}: {resp.status}")
+                    if actual_model != MODEL_SCRIBE_FALLBACK:
+                        logger.warning(f"5xx error on {actual_model}. Falling back to {MODEL_SCRIBE_FALLBACK}.")
+                        return await run_llm_generation(MODEL_SCRIBE_FALLBACK, prompt_text, redis_url=redis_url)
+                    raise Exception(last_error)
+
+                if resp.status != 200:
+                    err = await resp.text()
+                    raise Exception(f"API Error {resp.status}: {err}")
+
+                data = await resp.json()
+
+                # Token usage telemetry
+                usage = data.get("usage", {})
+                if usage and redis_url:
+                    try:
+                        ctx_limit = CONTEXT_LIMITS.get(actual_model, DEFAULT_CONTEXT_LIMIT)
+                        total = usage.get("total_tokens", 0) or 0
+                        r_telem = redis.from_url(redis_url, decode_responses=True)
+                        await r_telem.xadd("volition:token_usage", {
+                            "source": "scribe",
+                            "agent": "scribe",
+                            "model": actual_model,
+                            "prompt_tokens": str(usage.get("prompt_tokens", 0) or 0),
+                            "completion_tokens": str(usage.get("completion_tokens", 0) or 0),
+                            "total_tokens": str(total),
+                            "context_limit": str(ctx_limit),
+                            "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
+                            "ts": datetime.utcnow().isoformat()
+                        })
+                        await r_telem.close()
+                    except Exception:
+                        pass
+
+                message = data["choices"][0]["message"]
+                text = message.get("content", "")
+
+                # Extract reasoning to prevent it from bleeding into the final report
+                reasoning = message.get("reasoning_content", "")
+                if not reasoning and "<think>" in text:
+                    think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
+                    if think_match:
+                        reasoning = think_match.group(1).strip()
+                        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+                # Persist Scribe's internal monologue
+                if reasoning:
+                    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                    abe_root = Path(os.environ.get("ABE_ROOT", Path.home()))
+                    thoughts_file = abe_root / f"logs/thoughts/scribe-{today_str}.thot"
+                    thoughts_file.parent.mkdir(parents=True, exist_ok=True)
+
+                    with open(thoughts_file, "a", encoding="utf-8") as f:
+                        ts = datetime.utcnow().isoformat()
+                        f.write(f"\n--- [SCRIBE THOUGHT BURST: {ts} | Model: {model_id}] ---\n{reasoning}\n--- [END] ---\n")
+
+                return text
         
 async def main():
     parser = argparse.ArgumentParser(description="Volition Scribe")
@@ -188,7 +248,7 @@ async def main():
         # Group analyze with summarize so the LLM actually fires
         if args.mode in ["summarize", "analyze"]:
             # Direct generation via configured provider
-            result_text = await run_llm_generation(args.model, prompt_text)
+            result_text = await run_llm_generation(args.model, prompt_text, redis_url=args.redis_url)
             
             # 4. Report Success
             await push_result(
