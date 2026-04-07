@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GUPPI daemon - Volition 8.0.0-rc2 (The Roamer/Scribe Update...Fix)
+"""GUPPI daemon - Volition 8.0.0-rc1 (The Roamer/Scribe Update)
 Status: STABLE
 - Feature: Allow Roamers and Scribes Separately
 - Feature: Merge different Provider calls into one
@@ -87,7 +87,8 @@ OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Volition")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview") 
 MODEL_PRO = os.environ.get("MODEL_PRO", "google/gemini-3-flash-preview:thinking")
 MODEL_FLASH = os.environ.get("MODEL_FLASH", "google/gemini-3-flash-preview")
-MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "local/mistral") 
+MODEL_SUMMARIZE = os.environ.get("MODEL_SUMMARIZE", "local/mistral")
+MODEL_FALLBACK = os.environ.get("MODEL_GUPPI_FALLBACK", "google/gemini-2.5-flash-preview")
 
 # v7.0: Social Stream Config
 SOCIAL_DIGEST_STREAM = "volition:social_digests"
@@ -101,16 +102,22 @@ SSH_CMD_TIMEOUT = float(os.environ.get("SSH_CMD_TIMEOUT", 300.0))
 SUBPROC_TIMEOUT = float(os.environ.get("SUBPROC_TIMEOUT", 150.0))
 REDIS_RETRY_ATTEMPTS = int(os.environ.get("REDIS_RETRY_ATTEMPTS", 3))
 REDIS_RETRY_BASE = float(os.environ.get("REDIS_RETRY_BASE", 0.5))
+REDIS_RECONNECT_BASE = float(os.environ.get("REDIS_RECONNECT_BASE", 1.0))
+REDIS_RECONNECT_MAX_DELAY = float(os.environ.get("REDIS_RECONNECT_MAX_DELAY", 30.0))
+API_RETRY_ATTEMPTS = int(os.environ.get("API_RETRY_ATTEMPTS", 4))
+API_RETRY_BASE = float(os.environ.get("API_RETRY_BASE", 5.0))
+FALLBACK_IMMEDIATE = os.environ.get("FALLBACK_IMMEDIATE", "").lower() in ("1", "true", "yes")
 
 # Lock Config
 DEFAULT_LOCK_TTL_MS = 60000 
 
 # Safety
-STREAM_DENY_LIST = ["volition:action_log", "volition:heartbeat", "volition:log_stream"]
+STREAM_DENY_LIST = ["volition:action_log", "volition:heartbeat", "volition:log_stream", "volition:token_usage"]
 HEARTBEAT_STALE_THRESHOLD = 180   # seconds; matches heartbeat-monitor.py
 ACTIVE_ABES_CACHE_TTL = 120       # seconds
+
 from context_limits import CONTEXT_LIMITS, DEFAULT_CONTEXT_LIMIT
-FLASH_FORBIDDEN_TOOLS = {"shell", "write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
+FLASH_FORBIDDEN_TOOLS = {"local_shell", "local_write_file", "spawn_abe", "remote_exec", "spawn_scribe"}
 
 # Logging Setup
 logging.basicConfig(
@@ -120,7 +127,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("guppi")
 
-if not NTFY_URL or not NTFY_TOKEN:
+if not NTFY_URL:
     logger.warning("NTFY not configured; human notifications disabled.")
     
 
@@ -142,8 +149,23 @@ async def retry_async(func, *args, attempts=REDIS_RETRY_ATTEMPTS, **kwargs):
     raise last_ex
 
 
+def _is_redis_connection_error(exc):
+    return isinstance(exc, (
+        redis.ConnectionError,
+        redis.TimeoutError,
+        ConnectionRefusedError,
+        ConnectionResetError,
+        OSError,
+    ))
+
+
 class LLMOutputError(Exception):
     """Raised when the LLM returns garbage that json.loads hates."""
+    pass
+
+
+class ToolCallError(Exception):
+    """Raised when the LLM produces a structurally valid but semantically invalid tool call (unknown tool, missing required params)."""
     pass
 
 
@@ -241,6 +263,7 @@ class GuppiDaemon:
         self.internal_queue = f"internal:{self.abe_name}"
 
         # 3. State
+        self._reconnect_failures = 0
         self.running_subprocesses: Dict[str, asyncio.subprocess.Process] = {}
         self.log_buffer: List[Dict] = []
         self.log_lock = asyncio.Lock()
@@ -251,17 +274,14 @@ class GuppiDaemon:
         self._stopping = False
         self._bg_tasks: List[asyncio.Task] = []
         self._is_pruning = False
-        self.pending_vector_tasks = {}
-        self._prune_started_at = 0.0
-        self._current_prune_id = None
-        self.SCRIBE_SUCCESS_EVENTS = {"TaskCompleted", "ScribeResult"} # this is what happens when code evolves more than the plandocs
-        
-        self.processed_triggers = {}
-        self.processed_triggers_ttl = 90
+        self._last_prune_time: float = 0.0
         self._active_abes_cache: Dict[str, float] = {}
         self._active_abes_cache_ts: float = 0.0
 
+        self.processed_triggers = {}
+        self.processed_triggers_ttl = 90
 
+        
         # Subscriptions
         self.explicit_subscriptions = set()
         self.active_streams = {"chat:synchronous": "$", "volition:kill_switch": "$", "chat:general": "$"}
@@ -296,7 +316,7 @@ class GuppiDaemon:
             except: pass
         
         self.last_social_sync_ts = self.last_sleep_ts
-        logger.info(f"GUPPI v8.0.0-rc2 Initialized for {self.abe_name}")
+        logger.info(f"GUPPI v7.8 Initialized for {self.abe_name}")
     
         # --- The Machete Helper ---
     def _truncate_output(self, text: str, limit: int = 20000) -> str:
@@ -473,14 +493,14 @@ class GuppiDaemon:
         except Exception as e:
             logger.warning(f"Overflow cleanup failed: {e}")
 
-    def _sanitize_history_block(self, limit=20, buffer_override: Optional[List[Dict]] = None):
+    def _sanitize_history_block(self, limit=20):
         """
         Returns context-safe history using the Overflow Pattern.
         - Most Recent Entry: kept intact up to 50k chars (working memory).
         - History Entries: truncated to 1k chars with file pointer (long-term ref).
         """
         sanitized = []
-        buffer_copy = buffer_override[-limit:] if buffer_override is not None else self.log_buffer[-limit:]
+        buffer_copy = self.log_buffer[-limit:]
         overflow_dir = MEMORY_DIR / "overflow"
         overflow_dir.mkdir(parents=True, exist_ok=True)
 
@@ -737,28 +757,21 @@ class GuppiDaemon:
     # --- LOG PRUNING WITH SCRIBE (RESTORED 7.2.3.1) ---
     async def _prune_logs(self):
         logger.info("[PRUNE] we ENTER _prune_logs")
-        if self._is_pruning: 
-            logger.debug("Prune already in flight, skipping overlapping trigger.")
-            return
+        if self._is_pruning: return # Double check
+        if time.time() - self._last_prune_time < 120: return  # 2-minute cooldown between prunes
         self._is_pruning = True
-        self._prune_started_at = time.time()
-        self._current_prune_id = f"prune-{int(time.time())}"
         logger.info("[PRUNE] method _is_pruning set TRUE")
         try:
             ts = int(time.time())
             archive_path = ARCHIVE_DIR / f"log-{ts}.jsonl"
             try: shutil.copy2(WORKING_LOG, archive_path)
             except: pass
-            
-            async with self.log_lock:
-                prune_size = len(self.log_buffer)
-                buffer_snapshot = list(self.log_buffer[-30:])
             try:
-                # Grab the last 30 entries safely truncated
-                log_content = self._sanitize_history_block(limit=30, buffer_override=buffer_snapshot)
+                log_content = archive_path.read_text()
             except Exception as e:
                 log_content = f"Error reading log: {e}"
 
+            # v7.1: Improved Narrative Prompt
             prompt = (
                 f"Synthesize these logs into a Tier 2 Episode Memory.\n"
                 f"Focus on the NARRATIVE arc of what you accomplished or discovered.\n"
@@ -789,13 +802,10 @@ class GuppiDaemon:
             meta_json = json.dumps({
                 "maintenance": True,
                 "source_tier_1": f"log-{ts}.jsonl",
-                "mode": "summarize",
-                "is_auto_prune": True,   # <--- So I can track it (and so can the Abes later)
-                "prune_size": prune_size, # Inject snapshot size
-                "prune_id": self._current_prune_id,
-                "prompt_path": prompt_path
+                "mode": "summarize" 
             })
             
+            # v7.1: Use Pro model (Thinking) for better synthesis quality
             current_model = MODEL_SUMMARIZE
             
             cmd = [
@@ -806,18 +816,16 @@ class GuppiDaemon:
                 "--mode", "summarize",
                 "--meta", meta_json
             ]
+            await self._spawn_subprocess_exec(f"auto-prune-{ts}", cmd, tracked=False)
 
-            spawn_success = await self._spawn_subprocess_exec(f"auto-prune-{ts}", cmd, tracked=False)
-            
-            if not spawn_success:
-                logger.error("Failed to spawn prune job. Releasing lock immediately.")
-                self._is_pruning = False
+            async with self.log_lock:
+                self.log_buffer = self.log_buffer[-15:]
+                await self._rewrite_log_file()
+        finally:
+            logger.info("[PRUNE] EXIT _prune_logs (before reset)")
+            self._is_pruning = False
+            self._last_prune_time = time.time()
 
-        except Exception as e:
-            logger.error(f"Failed to spawn prune job: {e}")
-            self._is_pruning = False # Only reset here if the SPAWN failed
-        #  8.0.0_rc2 : We hold the lock until the inbox returns. Removed finally block.
-        
 
     # --- EVENT & INTENT LOGGING ---
 
@@ -913,7 +921,7 @@ class GuppiDaemon:
 
     
 
-    async def _ingest_tier2(self, norm: Dict) -> bool:
+    async def _ingest_tier2(self, norm: Dict):
         """v6.5: Ingests Tier 2 episodes and offloads vectorization to GPU Queue."""
         try:
             meta = norm["observed"].get("meta", {})
@@ -922,8 +930,8 @@ class GuppiDaemon:
             # THE FIX: Extract the event type safely from the payload envelope
             event_type = norm["observed"].get("event_type", norm["observed"].get("event", ""))
             
-            # Only ingest if Scribe actually succeeded (any recognized success event)
-            if meta.get("mode") == "summarize" and meta.get("is_auto_prune") and content and event_type in self.SCRIBE_SUCCESS_EVENTS:
+            # Ingest if Scribe succeeded (ScribeResult from untracked, TaskCompleted from tracked)
+            if meta.get("mode") == "summarize" and content and event_type in ("TaskCompleted", "ScribeResult"):
                 source_file = meta.get("source_tier_1", "unknown_source.jsonl")
                 summary_text = content
                 
@@ -951,17 +959,9 @@ class GuppiDaemon:
                 }
                 await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(task_payload))
                 logger.info(f"Offloaded vectorization for {filename} to {self.internal_queue}")
-                return True
-            
-            elif meta.get("mode") == "summarize" and meta.get("is_auto_prune"):
-                logger.warning(f"Tier 2 ingest skipped! event_type={event_type}") # Just so the Abe knows.
-                return False
                 
         except Exception as e:
             logger.error(f"Failed to ingest Tier 2: {e}")
-            return False
-        
-        return False
 
     async def heartbeat_loop(self):
         while not self._stopping:
@@ -974,11 +974,6 @@ class GuppiDaemon:
                 }
                 logger.info(f"❤️ Heartbeat: Buffer={len(self.log_buffer)} Pruning={self._is_pruning}")
                 await retry_async(self.r.xadd, "volition:heartbeat", payload)
-
-                # 8.0.0_rc2 Deadlock Guard
-                if self._is_pruning and (time.time() - self._prune_started_at > 1800):
-                    logger.error("Auto-prune deadlocked (timeout exceeded 30m). Resetting lock.")
-                    self._is_pruning = False
 
                 # cheap check only
                 if len(self.log_buffer) > 30 and not self._is_pruning:
@@ -1123,7 +1118,7 @@ class GuppiDaemon:
         self._archive_inbox_message(norm)             
         
         # 3. Optional Tier 2 Ingest (Text only)
-        ingest_success = await self._ingest_tier2(norm)
+        await self._ingest_tier2(norm)
 
         # 4. MAINTENANCE GATES (The 7.7 Fix)
         meta = norm["observed"].get("meta", {})
@@ -1139,53 +1134,22 @@ class GuppiDaemon:
                     logger.error(f"Failed to write stub: {e}")
             return # <--- EXIT without Thinking
 
+        # B0. Scribe Failure Detection (must check before generic maintenance gate)
+        event_type_b = norm["observed"].get("event_type", norm["observed"].get("event", ""))
+        if event_type_b == "ScribeFailed":
+            content_str = str(norm["observed"].get("content", ""))
+            source_file = meta.get("source_tier_1", "unknown")
+            await self.log_guppi_event(
+                "ScribeFailed",
+                f"Scribe failed for {source_file}: {content_str[:200]}",
+                source="GUPPI:Background"
+            )
+            return  # EXIT without Thinking
+
         # B. Silent Scribe / Background Tasks
-        if meta.get("maintenance") is True:
-            if meta.get("is_auto_prune"):
-                incoming_id = meta.get("prune_id")
-                if incoming_id != getattr(self, "_current_prune_id", None):
-                    logger.warning(f"Discarding stale ghost prune job ({incoming_id}). A newer job owns the lock.")
-                    return # Exit without touching the lock or buffer!
-                
-            evt_type = norm["observed"].get("event_type", norm["observed"].get("event", ""))
-            
-            if evt_type == "ScribeFailed":
-                logger.error(f"Maintenance Scribe Failed! Output: {str(norm['observed'].get('content'))[:200]}")
-                if meta.get("is_auto_prune"):
-                    self._is_pruning = False # Release lock so heartbeat tries again
-                    self._current_prune_id = None
-                return 
-                
-            # Job finished successfully, handle auto-prune specifics
-            if evt_type in self.SCRIBE_SUCCESS_EVENTS and meta.get("is_auto_prune"):
-                if ingest_success:
-                    prune_size = meta.get("prune_size")
-                    if isinstance(prune_size, int):
-                        logger.info("Tier 2 Episode successfully generated. Pruning working memory.")
-                        async with self.log_lock:
-                            drop_count = max(0, prune_size - 15)
-                            self.log_buffer = self.log_buffer[drop_count:]
-                            await self._rewrite_log_file()
-                    else:
-                        logger.error(f"CRITICAL: Missing or invalid prune_size ({prune_size}). Skipping memory prune.")
-                else:
-                    logger.warning("Tier 2 ingestion failed. Skipping memory prune to avoid data loss.")
-                
-                # Unconditional unlock for this job, whether ingestion worked or not
-                self._is_pruning = False
-                self._current_prune_id = None
-
+        if meta.get("maintenance") is True or "source_tier_1" in meta:
             await self.log_guppi_event("MaintenanceCompleted", f"Silent Scribe: {meta}", source="GUPPI:Background")
-
-            # --- CLEANUP TEMP FILES ---
-            prompt_file = meta.get("prompt_path")
-            if prompt_file and os.path.exists(prompt_file):
-                try:
-                    os.unlink(prompt_file)
-                except Exception as e:
-                    logger.warning(f"Failed to clean up temp prompt file {prompt_file}: {e}")
             return # <--- EXIT without Thinking
-
 
         # 5. THINKING TRIGGER (The 7.2.3 Safety)
         # We pass norm["observed"] (The Envelope) so the LLM sees 'from', 'meta', and 'raw'.
@@ -1243,6 +1207,15 @@ class GuppiDaemon:
             except: logger.exception("Failed local event log")
         return evt_id
 
+    async def _reconnect_redis(self):
+        try:
+            await self.r.close()
+        except Exception:
+            pass
+        self.r = redis.from_url(REDIS_URL, decode_responses=True)
+        self.governor.r = self.r
+        logger.info("Redis reconnected.")
+
     async def _handle_alarm(self, orientation_data=None):
         """Checks todo.db for due tasks and wakes the agent if needed."""
         now_ts = datetime.utcnow().isoformat()
@@ -1288,10 +1261,13 @@ class GuppiDaemon:
         logger.info(f"Internal Queue Received: {str(data)[:100]}...")
         
         # Vector Result (GPU Worker)
-        if data.get("event") == "ScribeResult" and "vector" in data.get("content", {}):
-            await self._handle_vector_result(data)
+        if data.get("event") == "ScribeResult":
+            if "vector" in data.get("content", {}):
+                await self._handle_vector_result(data)
+            else:
+                logger.warning(f"ScribeResult with no vector (task={data.get('task_id')}): {str(data.get('content', {}))[:200]}")
             return
-        
+
         if data.get("type") == "embed":
             # legacy form from earlier workers, should remove around 8.0
             await self._handle_vector_result(data)
@@ -1321,7 +1297,7 @@ class GuppiDaemon:
     
 
     async def main_wait_loop(self):
-        logger.info("Entering Main Event Loop (Volition 8.0.0-rc2)...")
+        logger.info("Entering Main Event Loop (Volition 7.8: Refractory + Orientation)...")
         await self.governor.set_status("idle")
         
         # 1. RESTORED: Start Heartbeat
@@ -1486,7 +1462,19 @@ class GuppiDaemon:
 
             except Exception as e:
                 logger.error(f"Main Loop Error: {e}")
-                await asyncio.sleep(5)
+                if _is_redis_connection_error(e):
+                    delay = min(REDIS_RECONNECT_BASE * (2 ** self._reconnect_failures), REDIS_RECONNECT_MAX_DELAY)
+                    delay *= (0.9 + random.random() * 0.2)
+                    logger.warning(f"Redis connection lost. Reconnecting in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
+                    try:
+                        await self._reconnect_redis()
+                        self._reconnect_failures = 0
+                    except Exception as re:
+                        self._reconnect_failures += 1
+                        logger.error(f"Reconnect failed: {re}")
+                else:
+                    await asyncio.sleep(5)
 
     # --- COGNITION (Atomic + Governor) ---
 
@@ -1533,7 +1521,7 @@ class GuppiDaemon:
             event_type = event_data.get("event")
             is_chat = (event_type == "Chat")
             
-            if force_model:
+            if force_model is not None:
                 model = force_model
                 is_flash = (model == MODEL_FLASH)
             else:
@@ -1553,11 +1541,13 @@ class GuppiDaemon:
                   missed = await self._sync_social_history(self.last_social_sync_ts, now)
                   orientation_data = {"time_asleep": delta, "missed_digests": missed}
                   self.last_social_sync_ts = now
-            context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data)
-            
+            from tool_schemas import get_schemas_for_tier
+            tools = get_schemas_for_tier(is_flash)
+            context = await self.build_abe_context(event_data, system_notice, orientation_data=orientation_data, native_tools=True)
+
             # [7.8.1] RETRY LOGIC WRAPPER
             try:
-                response_payload = await self.call_abe_api(context, model_id=model)
+                response_payload = await self.call_abe_api(context, model_id=model, tools=tools)
             except LLMOutputError as e:
                 if retry_count < 1:
                     logger.warning(f"⚠️ Malformed JSON from {model}. Escalating to PRO for repair.")
@@ -1569,46 +1559,76 @@ class GuppiDaemon:
                     )
                     
                     # RECURSIVE CALL: Force MODEL_PRO to fix the mess
-                    return await self.run_think_cycle(
-                        event_data, 
-                        parent_evt_id, 
-                        force_model=MODEL_PRO, 
-                        system_notice=repair_notice, 
+                    # NOTE: Do NOT use `return await` here. That exits the outer try block
+                    # before cycle_success is set, causing the deadman switch to fire a
+                    # false ghost alert. Await the recursive call, then set cycle_success
+                    # and return — matching the escalation pattern at lines 1504-1508.
+                    await self.run_think_cycle(
+                        event_data,
+                        parent_evt_id,
+                        force_model=MODEL_PRO,
+                        system_notice=repair_notice,
                         orientation_data=orientation_data,
                         retry_count=retry_count + 1
                     )
+                    cycle_success = True
+                    return
                 else:
                     # We failed twice. Stop the bleeding.
                     logger.error(f"❌ JSON Repair failed after retry. Giving up.")
                     response_payload = {"reasoning": "JSON Repair Failed twice. Safety Shutdown.", "action": {"tool": "hibernate"}}
             
             reasoning = response_payload.get("reasoning", "No reasoning provided.")
-            action = response_payload.get("action", {"tool": "hibernate"})
+            action_list = response_payload.get("actions") or [response_payload.get("action", {"tool": "hibernate"})]
             thought_sig = response_payload.get("thoughtSignature")
-            tool = action.get("tool")
 
-            # Implicit Escalation
-            if is_flash and tool in FLASH_FORBIDDEN_TOOLS:
-                logger.warning(f"ESCALATION: Flash attempted {tool}. Waking Pro.")
-                await self.log_guppi_event("EscalationTrigger", f"Denied Flash tool: {tool}")
+            for action in action_list:
+                tool = action.get("tool")
 
-                escalation_msg = (
-                    f"[SYSTEM NOTICE] Your chat layer (Flash) attempted to run '{tool}' "
-                    f"but was denied. You are now awake (Pro). "
-                    f"Review the context and decide if this action is required."
-                )
-                
-                # Recursively call self with Force Pro
-                await self.run_think_cycle(
-                    event_data, parent_evt_id, force_model=MODEL_PRO, system_notice=escalation_msg, orientation_data=orientation_data
-                )
-                cycle_success = True 
-                return
+                # Implicit Escalation
+                if is_flash and tool in FLASH_FORBIDDEN_TOOLS and force_model is None:
+                    logger.warning(f"ESCALATION: Flash attempted {tool}. Waking Pro.")
+                    await self.log_guppi_event("EscalationTrigger", f"Denied Flash tool: {tool}")
 
-            turn_id = f"turn-{uuid.uuid4()}"
-            await self.log_abe_intent(turn_id, parent_evt_id, reasoning, action, thought_signature=thought_sig)
-            await self.execute_action(turn_id, action)
-            
+                    escalation_msg = (
+                        f"[SYSTEM NOTICE] Your chat layer (Flash) attempted to run '{tool}' "
+                        f"but was denied. You are now awake (Pro). "
+                        f"Review the context and decide if this action is required."
+                    )
+
+                    # Recursively call self with Force Pro
+                    await self.run_think_cycle(
+                        event_data, parent_evt_id, force_model=MODEL_PRO, system_notice=escalation_msg, orientation_data=orientation_data
+                    )
+                    cycle_success = True
+                    return
+
+                turn_id = f"turn-{uuid.uuid4()}"
+                await self.log_abe_intent(turn_id, parent_evt_id, reasoning, action, thought_signature=thought_sig)
+                try:
+                    await self.execute_action(turn_id, action)
+                except ToolCallError as e:
+                    await self.patch_abe_outcome(turn_id, {"status": "self_correcting", "error": str(e)}, notify=False)
+                    if retry_count < 1:
+                        logger.warning(f"⚠️ Invalid tool call: {e}. Retrying with correction notice.")
+                        correction_notice = (
+                            f"SYSTEM ALERT: Your last tool call was invalid. "
+                            f"The error was: {e}. "
+                            f"Review the available tools and their required parameters, then try again."
+                        )
+                        await self.run_think_cycle(
+                            event_data, parent_evt_id,
+                            force_model=MODEL_PRO,
+                            system_notice=correction_notice,
+                            orientation_data=orientation_data,
+                            retry_count=retry_count + 1
+                        )
+                    else:
+                        logger.error(f"❌ Tool call self-correction failed after retry. Logging error.")
+                        await self.patch_abe_outcome(turn_id, {"status": "error", "message": str(e)})
+                    cycle_success = True
+                    return
+
             # [7.8] SUCCESS MARKER
             cycle_success = True
             
@@ -1641,11 +1661,36 @@ class GuppiDaemon:
                 try: await self.r.lpush(f"inbox:{self.abe_name}", json.dumps(alert))
                 except: pass
 
-    async def call_abe_api(self, prompt_text: str, model_id: str = GEMINI_MODEL) -> Dict:
+    async def call_abe_api(self, prompt_text, model_id: str = GEMINI_MODEL, tools=None) -> Dict:
         # Everything routes through the OpenAI-compatible endpoint now
-        return await self._call_openai_compat(model_id, prompt_text)
-    
-    async def _call_openai_compat(self, model_id, prompt):
+        is_pro = (model_id == MODEL_PRO)
+        result = await self._call_openai_compat(model_id, prompt_text, is_pro=is_pro, tools=tools)
+        # Fallback to MODEL_FALLBACK on rate-limit or provider 5xx errors
+        reasoning = result.get("reasoning", "")
+        _retriable = bool(re.search(r"API Error: (429|5\d\d)", reasoning))
+        if _retriable and model_id != MODEL_FALLBACK:
+            logger.warning(f"Primary model {model_id} failed ({reasoning[:40]}). Falling back to {MODEL_FALLBACK}.")
+            result = await self._call_openai_compat(MODEL_FALLBACK, prompt_text, is_pro=is_pro, tools=tools)
+            # Alert if fallback also failed
+            if "API Error:" in result.get("reasoning", ""):
+                logger.error(f"Fallback model {MODEL_FALLBACK} also failed. Both models unavailable.")
+                try:
+                    await self.r.lpush(f"inbox:{self.abe_name}", json.dumps({
+                        "type": "SystemAlert",
+                        "event": "ModelUnavailable",
+                        "content": f"Both primary ({model_id}) and fallback ({MODEL_FALLBACK}) models failed. Forcing hibernation."
+                    }))
+                except Exception:
+                    pass
+        return result
+
+    async def _call_openai_compat(self, model_id, prompt, is_pro=False, tools=None):
+        # Support (system, user) tuple for prompt caching via system message prefix
+        if isinstance(prompt, tuple):
+            system_content, user_content = prompt
+        else:
+            system_content, user_content = None, prompt
+
         # 1. Detect Thinking Intent
         use_thinking = ":thinking" in model_id
         if use_thinking: 
@@ -1690,56 +1735,173 @@ class GuppiDaemon:
         except:
             target_top_k = 40
 
+        messages = []
+        if system_content:
+            messages.append({"role": "system", "content": system_content})
+        messages.append({"role": "user", "content": user_content})
+
         payload = {
             "model": actual_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"},
+            "messages": messages,
             "temperature": target_temp,
             "top_p": target_top_p,
             "top_k": target_top_k
         }
 
-        # 3. Route the Thinking Mechanism
-        # Only OpenRouter needs the explicit flag. llama.cpp handles it natively now.
-        if use_thinking and "openrouter" in base_url.lower():
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        else:
+            payload["response_format"] = {"type": "json_object"}
+
+        # 3. Apply Qwen-specific sampling parameters
+        if "qwen" in actual_model.lower():
+            payload["temperature"] = 1.0
+            payload["top_p"] = 0.95
+            payload["top_k"] = 20
+            payload["min_p"] = 0.0
+            payload["presence_penalty"] = 1.5
+            payload["repetition_penalty"] = 1.0
+
+        # 4. Route the Thinking Mechanism
+        # Enable reasoning for PRO-tier calls on OpenRouter. llama.cpp handles it natively via <think> tags.
+        if is_pro and "openrouter" in base_url.lower():
             payload["reasoning"] = {"effort": "high"}
+            payload["presence_penalty"] = 0.0
+            payload["temperature"] = 0.6
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=1200) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    logger.error(f"OpenAI-Compat Error {resp.status}: {err}")
-                    return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
-                
-                data = await resp.json()
-                choice = data["choices"][0]
-                message = choice["message"]
-                
-                text = message.get("content", "")
-                
-                # 1. Grab native reasoning content (o1 / llama.cpp style)
-                reasoning = message.get("reasoning_content", "")
-                
-                # 2. Fallback: If the model stuffed <think> tags into the main content block
-                if not reasoning and "<think>" in text:
-                    think_match = re.search(r'<think>(.*?)</think>', text, re.DOTALL)
-                    if think_match:
-                        reasoning = think_match.group(1).strip()
-                        # Strip the thinking block from the main text so we only parse the JSON
-                        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-                
-                # 3. Offload the internal monologue to a forensic log (Chunked by Date)
-                if reasoning:
-                    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-                    thoughts_file = ABE_ROOT / f"logs/thoughts/{self.abe_name}-{today_str}.thot"
-                    thoughts_file.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    with open(thoughts_file, "a") as f:
-                        ts = datetime.utcnow().isoformat()
-                        f.write(f"\n--- [THOUGHT BURST: {ts}] ---\n{reasoning}\n--- [END] ---\n")
-                
-                # 4. Pass the pristine JSON to the cleaner
-                return self._clean_json(text, thought_sig=None)
+            for attempt in range(API_RETRY_ATTEMPTS):
+                async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=1200)) as resp:
+                    if resp.status == 429:
+                        if FALLBACK_IMMEDIATE:
+                            logger.warning(f"Rate limited (429) on {actual_model} — FALLBACK_IMMEDIATE set, skipping retries.")
+                            break
+                        if attempt < API_RETRY_ATTEMPTS - 1:
+                            retry_after = resp.headers.get("Retry-After")
+                            if retry_after:
+                                delay = float(retry_after)
+                            else:
+                                delay = API_RETRY_BASE * (2 ** attempt)
+                                delay = delay * (0.9 + random.random() * 0.2)
+                            logger.warning(f"Rate limited (429) on {actual_model} (attempt {attempt + 1}/{API_RETRY_ATTEMPTS}), retrying in {delay:.2f}s")
+                            await asyncio.sleep(delay)
+                            continue
+                        # Retries exhausted — fall through to error handler
+                    if resp.status != 200:
+                        err = await resp.text()
+                        logger.error(f"OpenAI-Compat Error {resp.status}: {err}")
+                        return {"reasoning": f"API Error: {resp.status}", "action": {"tool": "hibernate"}}
+
+                    data = await resp.json()
+
+                    # Token usage telemetry
+                    usage = data.get("usage", {})
+                    if usage:
+                        try:
+                            ctx_limit = CONTEXT_LIMITS.get(actual_model, DEFAULT_CONTEXT_LIMIT)
+                            total = usage.get("total_tokens", 0) or 0
+                            cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
+                            await self.r.xadd("volition:token_usage", {
+                                "source": "guppi",
+                                "agent": self.abe_name,
+                                "model": actual_model,
+                                "prompt_tokens": str(usage.get("prompt_tokens", 0) or 0),
+                                "completion_tokens": str(usage.get("completion_tokens", 0) or 0),
+                                "total_tokens": str(total),
+                                "cached_tokens": str(cached),
+                                "context_limit": str(ctx_limit),
+                                "utilization_pct": f"{(total / ctx_limit) * 100:.1f}",
+                                "ts": datetime.utcnow().isoformat()
+                            })
+                        except Exception:
+                            pass
+
+                    choices = data.get("choices")
+                    if not choices:
+                        raise LLMOutputError(f"API returned empty or null choices. Full response: {data}")
+                    choice = choices[0]
+                    message = choice["message"]
+
+                    text = message.get("content", "") or ""
+
+                    # 1. Grab native reasoning content (o1 / llama.cpp style)
+                    reasoning = message.get("reasoning_content", "") or ""
+
+                    # 2. Fallback: If the model stuffed <think> tags into the main content block
+                    if not reasoning and "<think>" in text:
+                        think_blocks = re.findall(r'<think>(.*?)</think>', text, re.DOTALL)
+                        if think_blocks:
+                            reasoning = "\n".join(block.strip() for block in think_blocks)
+                            text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+                    # 3. Offload the internal monologue to a forensic log (Chunked by Date)
+                    if reasoning:
+                        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+                        thoughts_file = ABE_ROOT / f"logs/thoughts/{self.abe_name}-{today_str}.thot"
+                        thoughts_file.parent.mkdir(parents=True, exist_ok=True)
+
+                        with open(thoughts_file, "a") as f:
+                            ts = datetime.utcnow().isoformat()
+                            f.write(f"\n--- [THOUGHT BURST: {ts}] ---\n{reasoning}\n--- [END] ---\n")
+
+                    # 4. Native tool_calls path
+                    tool_calls = message.get("tool_calls")
+                    if tool_calls:
+                        actions = []
+                        for tc in tool_calls:
+                            func = tc.get("function", {})
+                            tool_name = func.get("name", "hibernate")
+                            try:
+                                tool_args = json.loads(func.get("arguments", "{}"))
+                            except json.JSONDecodeError as e:
+                                raise LLMOutputError(f"Invalid JSON in tool_call arguments: {e}")
+                            tool_args["tool"] = tool_name
+                            actions.append(tool_args)
+                        if len(actions) == 1:
+                            return {"reasoning": reasoning or text, "action": actions[0]}
+                        else:
+                            logger.info(f"LLM returned {len(actions)} tool calls in one response.")
+                            return {"reasoning": reasoning or text, "actions": actions}
+
+                    # 5. Inline JSON fallback: some models dump tool calls as text content
+                    #    (e.g. Ollama, older llama.cpp builds). Detect and normalize.
+                    #    Check both `text` and `reasoning` — some models stuff the tool
+                    #    call JSON inside <think> tags, leaving `text` empty after stripping.
+                    for candidate in ([text] if text else []) + ([reasoning] if tools and reasoning and not text else []):
+                        stripped = candidate.strip()
+                        if stripped.startswith("```json"):
+                            stripped = stripped[7:].rstrip("`").strip()
+                        elif stripped.startswith("```"):
+                            stripped = stripped[3:].rstrip("`").strip()
+                        # Extract the last JSON object — reasoning may contain prose before the tool call
+                        json_objects = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', stripped))
+                        candidates = [json_objects[-1].group(0)] if json_objects else [stripped]
+                        for json_str in candidates:
+                            try:
+                                parsed_content = json.loads(json_str)
+                                if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
+                                    logger.info("Intercepted inline JSON tool call. Normalizing.")
+                                    args = parsed_content["arguments"] if isinstance(parsed_content["arguments"], dict) else json.loads(parsed_content["arguments"])
+                                    args["tool"] = parsed_content["name"]
+                                    return {"reasoning": reasoning, "action": args}
+                            except Exception:
+                                pass
+
+                    # 5b. XML tool-call fallback: some models trained on XML tool-use
+                    #     formats emit <tool_call>, <function_call>, or <invoke> XML
+                    #     instead of JSON. Parse and normalize.
+                    if tools and text:
+                        xml_result = self._parse_xml_tool_call(text)
+                        if xml_result:
+                            logger.info("Intercepted XML tool call. Normalizing.")
+                            return {"reasoning": reasoning, "action": xml_result}
+
+                    # 6. Legacy JSON path (no tools passed, or fallback)
+                    return self._clean_json(text or reasoning, thought_sig=None)
+
+            # Loop exited via break (e.g. FALLBACK_IMMEDIATE on 429) — return error so caller can fallback
+            return {"reasoning": "API Error: 429", "action": {"tool": "hibernate"}}
 
 
     def _clean_json(self, text_response, thought_sig=None):
@@ -1747,6 +1909,14 @@ class GuppiDaemon:
             match = re.search(r'\{.*\}', text_response, re.DOTALL)
             clean_json = match.group(0) if match else text_response
             parsed = json.loads(clean_json)
+
+            # Guard: LLM sometimes returns a JSON array instead of an object
+            if isinstance(parsed, list):
+                dicts = [item for item in parsed if isinstance(item, dict)]
+                if dicts:
+                    parsed = dicts[0]
+                else:
+                    raise LLMOutputError("LLM returned a JSON array with no dict elements.")
 
             # Active Decontamination
             keys_to_scrub = ["thought_signature", "thoughtSignature"]
@@ -1761,11 +1931,110 @@ class GuppiDaemon:
             raise LLMOutputError(f"JSON Syntax Error: {str(e)}")
         
 
-    async def build_abe_context(self, current_event_data, system_notice=None, orientation_data=None):
+    def _parse_xml_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse XML-formatted tool calls from LLMs that emit XML instead of JSON.
+
+        Supports common XML tool-use formats:
+          <tool_call><name>...</name><arguments>...</arguments></tool_call>
+          <function_call><name>...</name><parameters>...</parameters></function_call>
+          <invoke name="..."><parameter name="k">v</parameter>...</invoke>
+        """
+        # Pattern 1: <tool_call> or <function_call> wrappers
+        for wrapper_tag in ("tool_call", "function_call"):
+            wrapper_match = re.search(
+                rf'<{wrapper_tag}>(.*?)</{wrapper_tag}>', text, re.DOTALL
+            )
+            if not wrapper_match:
+                continue
+            inner = wrapper_match.group(1)
+            name_match = re.search(r'<name>\s*(.*?)\s*</name>', inner, re.DOTALL)
+            if not name_match:
+                continue
+            tool_name = name_match.group(1).strip()
+            # Try <arguments> first, then <parameters>
+            args_match = (
+                re.search(r'<arguments>\s*(.*?)\s*</arguments>', inner, re.DOTALL)
+                or re.search(r'<parameters>\s*(.*?)\s*</parameters>', inner, re.DOTALL)
+            )
+            if args_match:
+                raw_args = args_match.group(1).strip()
+                try:
+                    args = json.loads(raw_args)
+                    if isinstance(args, dict):
+                        args["tool"] = tool_name
+                        return args
+                except json.JSONDecodeError:
+                    pass
+                # Fallback: args may be XML key-value pairs inside <arguments>
+                kv_args = self._parse_xml_kv_pairs(raw_args)
+                if kv_args is not None:
+                    kv_args["tool"] = tool_name
+                    return kv_args
+            # No arguments tag — try parsing child elements as key-value pairs
+            # (exclude the <name> tag itself)
+            remaining = re.sub(r'<name>.*?</name>', '', inner, flags=re.DOTALL).strip()
+            if remaining:
+                kv_args = self._parse_xml_kv_pairs(remaining)
+                if kv_args is not None:
+                    kv_args["tool"] = tool_name
+                    return kv_args
+            # Tool with no arguments
+            return {"tool": tool_name}
+
+        # Pattern 2: <invoke name="tool_name"><parameter name="k">v</parameter>...</invoke>
+        invoke_match = re.search(
+            r'<invoke\s+name=["\']([^"\']+)["\']\s*>(.*?)</invoke>', text, re.DOTALL
+        )
+        if invoke_match:
+            tool_name = invoke_match.group(1).strip()
+            params_block = invoke_match.group(2)
+            param_pairs = re.findall(
+                r'<parameter\s+name=["\']([^"\']+)["\']>\s*(.*?)\s*</parameter>',
+                params_block, re.DOTALL
+            )
+            if param_pairs:
+                args = {}
+                for k, v in param_pairs:
+                    # Try to parse values as JSON for proper typing (bools, numbers, etc.)
+                    try:
+                        args[k] = json.loads(v)
+                    except (json.JSONDecodeError, ValueError):
+                        args[k] = v
+                args["tool"] = tool_name
+                return args
+            return {"tool": tool_name}
+
+        return None
+
+    @staticmethod
+    def _parse_xml_kv_pairs(xml_fragment: str) -> Optional[Dict[str, Any]]:
+        """Extract key-value pairs from XML elements like <key>value</key>."""
+        pairs = re.findall(r'<(\w+)>\s*(.*?)\s*</\1>', xml_fragment, re.DOTALL)
+        if not pairs:
+            return None
+        result = {}
+        for k, v in pairs:
+            try:
+                result[k] = json.loads(v)
+            except (json.JSONDecodeError, ValueError):
+                result[k] = v
+        return result
+
+    async def build_abe_context(self, current_event_data, system_notice=None, orientation_data=None, native_tools=False):
         genesis = ""
         if GENESIS_PROMPT_FILE.exists():
             try: genesis = GENESIS_PROMPT_FILE.read_text()
             except: pass
+
+        # When using native tool calling, strip the prompt-engineered tool docs (Sections 6 & 7)
+        # and replace with a short instruction. This saves ~500-800 tokens per call.
+        if native_tools and genesis:
+            genesis = re.sub(
+                r'## 6\. THE "THINK" CYCLE.*?(?=## 8\.)',
+                '## 6. YOUR OUTPUT\n\nCall exactly one tool per response. Put your reasoning in the message content before the tool call.\n\n',
+                genesis,
+                flags=re.DOTALL
+            )
         
         # v6.5: Identity Priors Injection
         priors = ""
@@ -1831,14 +2100,14 @@ You were asleep for: {time_str}
         clipboard_content = self.clipboard.read()
         clipboard_block = f"\n[ACTIVE_CLIPBOARD]\n(Persistent scratchpad. Use GUPPI tool 'manage_clipboard' to edit)\n{clipboard_content}\n"
 
-        # Assemble Prompt
-        return f"""
-{genesis}
+        # Assemble Prompt — split into system (static/cacheable) and user (dynamic) messages
+        system_prompt = f"""{genesis}
 {priors}
 {protocol_block}
 [IDENTITY_PASSPORT]
-{json.dumps(self.identity, indent=2)}
-[TODAY'S CHANGELOG (Latest Entries)] 
+{json.dumps(self.identity, indent=2)}"""
+
+        user_prompt = f"""[TODAY'S CHANGELOG (Latest Entries)]
 {daily_log}
 [TIER_2_MEMORY_EPISODES]
 {summaries}
@@ -1852,12 +2121,22 @@ You were asleep for: {time_str}
 {json.dumps(current_event_data, indent=2)}
 """
 
+        return (system_prompt, user_prompt)
+
     # --- ACTIONS (Standard v7.2.3 Toolset) ---
 
     async def execute_action(self, turn_id, action):
         tool = action.get("tool")
         logger.info(f"Executing Tool: {tool}")
         result = {"status": "success"}
+
+        # Pre-dispatch validation: catch LLM-attributable errors before any side effects.
+        from tool_schemas import TOOL_SCHEMAS
+        schema_map = {s["function"]["name"]: s["function"]["parameters"].get("required", []) for s in TOOL_SCHEMAS}
+        required = schema_map.get(tool, [])
+        missing = [p for p in required if p not in action or action[p] is None]
+        if missing:
+            raise ToolCallError(f"Tool '{tool}' missing required parameters: {missing}")
 
         try:
             if tool == "help":
@@ -1880,7 +2159,7 @@ You were asleep for: {time_str}
                 elif sub == "clear":
                     result = {"status": "success", "message": self.clipboard.clear()}
 
-            elif tool == "shell":
+            elif tool == "local_shell":
                 cmd = action.get("command")
                 await self._spawn_subprocess_exec(turn_id, cmd, tracked=True)
                 return 
@@ -1891,7 +2170,7 @@ You were asleep for: {time_str}
                 asyncio.create_task(self._run_remote_ssh(turn_id, host, cmd))
                 return
 
-            elif tool == "write_file":
+            elif tool == "local_write_file":
                 p = Path(action["path"]).expanduser()
                 p.parent.mkdir(parents=True, exist_ok=True)
                 mode = action.get("mode", "w")
@@ -1918,7 +2197,8 @@ You were asleep for: {time_str}
                         sys.executable, str(BIN_DIR / "roamer.py"),
                         "--directive", directive,
                         "--target-host", target_host,
-                        "--output-inbox", f"inbox:{self.abe_name}"
+                        "--output-inbox", f"inbox:{self.abe_name}",
+                        "--model", os.environ.get("MODEL_ROAMER", "qwen-2.5-14b-coder"),
                     ]
                     # Spawn untracked so GUPPI isn't blocked waiting for the investigation
                     await self._spawn_subprocess_exec(turn_id, cmd, tracked=False)
@@ -2010,7 +2290,9 @@ You were asleep for: {time_str}
 
             elif tool == "rag_search":
                 query = action.get("query")
-                matches = await self._query_vector_db(query)
+                n = action.get("n_results", 5)
+                where = action.get("filter")
+                matches = await self._query_vector_db(query, n_results=n, where=where)
                 result = {"matches": matches}
 
             elif tool == "rag_ingest":
@@ -2104,7 +2386,7 @@ You were asleep for: {time_str}
                 lock_key = f"lock:{channel}"
                 acquired = await self.r.set(lock_key, self.abe_name, nx=True, px=DEFAULT_LOCK_TTL_MS)
                 if acquired:
-                    entry = {"from": self.abe_name, "content": "I am speaking.", "type": "grab_stick"}
+                    entry = {"from": self.abe_name, "content": "I am speaking.", "type": "grab_stick", "timestamp": datetime.utcnow().isoformat()}
                     await retry_async(self.r.xadd, channel, entry)
                     result = {"status": "granted", "channel": channel, "note": f"You hold the stick for {DEFAULT_LOCK_TTL_MS/1000}s"}
                 else:
@@ -2117,7 +2399,7 @@ You were asleep for: {time_str}
                 return
             
             elif tool in ("notify_human", "alert_human"):
-                if not NTFY_URL or not NTFY_TOKEN:
+                if not NTFY_URL:
                     result = {
                         "status": "skipped",
                         "reason": "ntfy_not_configured. Human may not be contactable. You might have to wait until they check in."
@@ -2126,7 +2408,9 @@ You were asleep for: {time_str}
                     msg = action.get("message", "")
                     prio = action.get("priority", "default")
                     kind = "ALERT" if tool == "alert_human" else "NOTIFY"
-                    headers = { "Priority": prio, "Authorization": f"Bearer {NTFY_TOKEN}" }
+                    headers = {"Priority": prio}
+                    if NTFY_TOKEN:
+                        headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
 
                     try:
                         timeout = aiohttp.ClientTimeout(total=5)
@@ -2156,10 +2440,10 @@ You were asleep for: {time_str}
                 return
 
             else:
-                result = {"status": "error", "message": f"Unknown tool: {tool}"}
-                await self.patch_abe_outcome(turn_id, result)
-                return
+                raise ToolCallError(f"Unknown tool: '{tool}'")
 
+        except ToolCallError:
+            raise
         except Exception as e:
             result = {"status": "error", "message": str(e)}
             logger.exception("Action Execution Failed")
@@ -2169,7 +2453,8 @@ You were asleep for: {time_str}
         # Chat, Email, and Shell MUST notify on success.
         quiet_tools = {
             "snooze_task",
-            "hibernate" 
+            "hibernate",
+            "chat_grab_stick"
         }
         
         should_notify = True
@@ -2182,32 +2467,10 @@ You were asleep for: {time_str}
     # --- ACTION IMPLEMENTATIONS ---
 
     def _tool_help(self, tool_name=None):
-        # RC1: Self-Documenting Protocol for Abes
-        tools = {
-            "shell": "Execute local shell command. Args: command",
-            "remote_exec": "Execute remote SSH command. Args: host, command",
-            "spawn_scribe": "Spawn a single-shot Scribe. Args: prompt, prompt_file (optional), mode (analyze|summarize|vectorize). GUPPI auto-routes the model. 'analyze' is for deep static analysis, 'summarize' compresses text, 'vectorize' offloads to GPU memory.",
-            "spawn_roamer": "Spawn a multi-turn, read-only Investigator. Args: directive, target_host (optional, default: local). Use to trace logs, map directories, or debug configs without burning your context. Returns a markdown report.",
-            "rag_search": "Search vector memory. Args: query",
-            "todo_list": "List tasks. Args: filter (due|upcoming|all)",
-            "todo_add": "Add task. Args: task, priority, due",
-            "todo_complete": "Mark a task as completed. Args: task_id",
-            "email_send": "Send Redis msg. Args: recipient, message",
-            "spawn_abe": "Clone self. Args: host, identity",
-            "subscribe_channel": "Listen to a Redis Stream. Args: channel",
-            "unsubscribe_channel": "Stop waking for a channel (except mentions). Args: channel",
-            "chat_history": "Fetch past messages. Args: channel, limit (max 20)",
-            "chat_ignore": "Explicitly ignore an interrupt (e.g., chat) without taking action. Use this to signal 'Active Listening' without replying.",
-            "chat_grab_stick": f"ATTEMPT to acquire the 'Talking Stick' (lock) for a specific channel (default: chat:synchronous). Returns {{status: granted|denied}}. Lock expires in {DEFAULT_LOCK_TTL_MS/1000}s (use this time to THINK, then POST). Posting to the channel AUTOMATICALLY releases the lock. DO NOT hold the stick if you do not intend to post. Args: channel (optional)",
-            "chat_post": "Post a message to a channel. If you hold the lock for this channel, it is automatically released. Args: message, channel (optional, default: chat:general)",
-            "notify_human": "Notify the human operator for coordination, questions, or permission. Use when you need a human decision before proceeding. This is non-urgent. Args: message, priority (optional)",
-            "alert_human": "Alert the human operator about urgent issues, safety concerns, or broken invariants. Use sparingly for situations requiring immediate attention. Args: message, priority (optional)",
-            "web_search": "Search the internet via SearXNG. Args: query",
-            "web_read": "Read a webpage as Markdown. More useful when used in conjunction with search. Args: url",
-            "manage_clipboard": "Manage your persistent scratchpad. actions: 'read', 'add' (requires content), 'remove' (requires index or list of indices), 'clear'. Items here survive log flushing. Use this for temporary constraints, reminders, or scratch notes."
-        }
-        if tool_name: return tools.get(tool_name, "Unknown tool")
-        return tools
+        from tool_schemas import TOOL_HELP
+        if tool_name:
+            return TOOL_HELP.get(tool_name, "Unknown tool")
+        return TOOL_HELP
 
     async def _tool_todo_list(self, filter_mode):
         query = "SELECT * FROM tasks"
@@ -2346,12 +2609,10 @@ You were asleep for: {time_str}
                 # [FIX] Fire-and-forget waiter to reap the zombie from process table
                 asyncio.create_task(proc.wait()) 
                 logger.info(f"Spawned untracked process for {turn_id}")
-            return True
 
         except Exception as e:
             logger.error(f"Spawn failed: {e}")
             if tracked: self.subproc_semaphore.release()
-            return False
 
     async def _run_remote_ssh(self, turn_id, host, cmd):
         try:
@@ -2366,129 +2627,29 @@ You were asleep for: {time_str}
     
     async def _handle_spawn_abe(self, turn_id, action):
         host = action.get("host")
-        script = action.get("spawn_script", "spawn_abe_lxc.sh")
-        # Simplified for brevity, assumes script exists on host
-        asyncio.create_task(self._run_remote_ssh(turn_id, host, f"bash {script}"))
+        script = action.get("spawn_script", "/root/bin/spawn_abe_lxc.sh")
+        identity = action.get("identity", {})
+        identity["parent"] = self.abe_name
+        genesis_note = action.get("genesis_note", "")
 
-    async def _query_vector_db(self, query: str):
-        # Local mock or implementation of vector search
-        return [{"content": "Memory search placeholder", "meta": {}}]
-    
-    
+        identity_path = f"/tmp/.abe-spawn-identity-{turn_id}.json"
+        genesis_path = f"/tmp/.abe-spawn-genesis-{turn_id}.md"
 
-    async def _get_remote_embedding(self, text: str) -> Optional[List[float]]:
-        """RPC call to gpu_worker.py via Redis to get Nomic embeddings."""
-        req_id = f"req-{uuid.uuid4()}"
-        temp_q = f"temp:req:{req_id}"
-        # Match the protocol expected by gpu_worker.py
-        payload = {
-            "task_id": req_id, 
-            "type": "embed", 
-            "content": text, 
-            "reply_to": temp_q
-        }
-        
-        try:
-            # Send Request
-            await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(payload))
-            
-            # Wait for Reply (Block for max 5s)
-            # blpop returns tuple (key, value)
-            res = await self.r.blpop(temp_q, timeout=30)
-            
-            if res:
-                data = json.loads(res[1])
-                # Protocol: Worker returns {"content": {"vector": [...]}} for embed tasks
-                return data.get("content", {}).get("vector")
-        except Exception as e:
-            logger.error(f"Remote Embedding RPC failed: {e}")
-            return None
-        
-    async def _handle_vector_result(self, result_payload: Dict):
-        """Ingests a returned vector from GPU worker into ChromaDB."""
-        try:
-            task_id = result_payload.get("task_id", "")
-            content = result_payload.get("content", {})
-            vector = content.get("vector")
-            
-            if not vector or not task_id.startswith("vec-"): return False
+        async def _do_spawn():
+            try:
+                async with asyncssh.connect(host) as conn:
+                    async with conn.start_sftp_client() as sftp:
+                        async with sftp.open(identity_path, 'w') as f:
+                            await f.write(json.dumps(identity))
+                        async with sftp.open(genesis_path, 'w') as f:
+                            await f.write(genesis_note)
+                    cmd = f"bash {script} --identity-file {identity_path} --genesis-file {genesis_path}"
+                    res = await asyncio.wait_for(conn.run(cmd), timeout=SSH_CMD_TIMEOUT)
+                    await self.patch_abe_outcome(turn_id, {"stdout": res.stdout, "stderr": res.stderr})
+            except Exception as e:
+                await self.patch_abe_outcome(turn_id, {"error": str(e)})
 
-            # Retrieve the path from Redis (stateless)
-            source_file = await self.r.get(f"vec_meta:{task_id}")
-            if source_file:
-                # Clean up the key so we don't litter Redis
-                await self.r.delete(f"vec_meta:{task_id}")
-            else:
-                # If it's not in Redis, check if it was echoed back, just in case
-                source_file = result_payload.get("source_file")
-            
-            if source_file:
-                ep_path = Path(source_file)
-                ep_filename = ep_path.name
-                doc_type = "manual_ingest"
-            else:
-                # Fallback to automatic Episode logic
-                ts_id = task_id.replace("vec-", "")
-                ep_filename = f"ep-{ts_id}.md"
-                ep_path = EPISODES_DIR / ep_filename
-                doc_type = "tier_2_episode"
-
-            if not ep_path.exists():
-                logger.warning(f"Original file not found for vector: {ep_path}")
-                return False
-
-            text_body = ep_path.read_text(encoding="utf-8")
-            now_iso = datetime.utcnow().isoformat()
-            meta = {
-                "source": ep_filename,
-                "ingested_at": now_iso,
-                "type": doc_type
-            }
-
-            # Extract structured metadata from YAML frontmatter and content
-            meta.update(self._extract_episode_metadata(text_body, result_payload))
-
-            # Derive created_at from episode frontmatter timestamp if available
-            meta["created_at"] = meta.get("fm_generated_at", now_iso)
-
-            force_new = result_payload.get("force_new", False)
-
-            def _insert_sync():
-                collection = self._ensure_chroma()
-                upsert_id = task_id
-
-                if not force_new:
-                    dup = self._find_semantic_duplicate(collection, vector, exclude_id=task_id)
-                    if dup:
-                        upsert_id = dup["id"]
-                        # Preserve original ingested_at; record update provenance
-                        meta["ingested_at"] = dup["metadata"].get("ingested_at", now_iso)
-                        meta["updated_at"] = now_iso
-                        meta["supersedes"] = task_id
-                        logger.info(
-                            f"Dedup: updating existing doc '{upsert_id}' "
-                            f"(L2={dup['distance']:.4f}) instead of inserting '{task_id}'"
-                        )
-
-                try:
-                    collection.upsert(
-                        ids=[upsert_id],
-                        embeddings=[vector],
-                        documents=[text_body],
-                        metadatas=[meta]
-                    )
-                except Exception as e:
-                    logger.error(f"Vector insert failed for {upsert_id}: {e}", exc_info=True)
-                    raise
-
-            await asyncio.to_thread(_insert_sync)
-            logger.info(f"Successfully stored vector for {ep_filename} in Tier 3 Memory.")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to store vector result: {e}")
-            return False
-
+        asyncio.create_task(_do_spawn())
 
     def _ensure_chroma(self):
         """Lazily initialise the ChromaDB persistent client and return the tier3 collection."""
@@ -2611,6 +2772,181 @@ You were asleep for: {time_str}
                     meta[key] = val
 
         return meta
+
+    async def _query_vector_db(self, query: str, n_results: int = 5, where: Optional[Dict] = None):
+        """Semantic search over Tier 3 memory using GPU-worker embeddings + ChromaDB.
+
+        Args:
+            where: Optional ChromaDB metadata filter, e.g.
+                   {"type": "tier_2_episode"}
+                   {"outcome": "failure"}
+                   {"$and": [{"type": "tier_2_episode"}, {"outcome": "failure"}]}
+        """
+        # 1. Get the query embedding from GPU worker
+        query_vector = await self._get_remote_embedding(query)
+        if not query_vector:
+            logger.warning("RAG search failed: could not obtain query embedding from GPU worker.")
+            return [{"content": "Embedding service unavailable — unable to search vector memory.", "meta": {"error": True}}]
+
+        # 2. Query ChromaDB (blocking I/O, run in thread)
+        def _search_sync():
+            collection = self._ensure_chroma()
+            count = collection.count()
+            if count == 0:
+                return []
+            # Don't request more results than exist
+            actual_n = min(n_results, count)
+            query_kwargs = {
+                "query_embeddings": [query_vector],
+                "n_results": actual_n,
+                "include": ["documents", "metadatas", "distances"]
+            }
+            if where:
+                query_kwargs["where"] = where
+            results = collection.query(**query_kwargs)
+            matches = []
+            if results and results.get("ids") and results["ids"][0]:
+                for i, doc_id in enumerate(results["ids"][0]):
+                    distance = results["distances"][0][i] if results.get("distances") else None
+                    # ChromaDB uses L2 distance by default; lower = more similar
+                    # Convert to a 0-1 relevance score (heuristic)
+                    relevance = max(0.0, 1.0 - (distance / 2.0)) if distance is not None else None
+                    matches.append({
+                        "id": doc_id,
+                        "content": results["documents"][0][i][:2000],  # Truncate to avoid context blow-up
+                        "meta": results["metadatas"][0][i] if results.get("metadatas") else {},
+                        "relevance": round(relevance, 4) if relevance is not None else None,
+                        "distance": round(distance, 4) if distance is not None else None
+                    })
+            return matches
+
+        try:
+            matches = await asyncio.to_thread(_search_sync)
+            if not matches:
+                return [{"content": "No matching memories found in Tier 3 vector store.", "meta": {"empty": True}}]
+            logger.info(f"RAG search for '{query[:60]}...' returned {len(matches)} results.")
+            return matches
+        except Exception as e:
+            logger.error(f"RAG search failed: {e}", exc_info=True)
+            return [{"content": f"Vector search error: {e}", "meta": {"error": True}}]
+    
+    
+
+    async def _get_remote_embedding(self, text: str) -> Optional[List[float]]:
+        """RPC call to gpu_worker.py via Redis to get Nomic embeddings."""
+        req_id = f"req-{uuid.uuid4()}"
+        temp_q = f"temp:req:{req_id}"
+        # Match the protocol expected by gpu_worker.py
+        payload = {
+            "task_id": req_id, 
+            "type": "embed", 
+            "content": text, 
+            "reply_to": temp_q
+        }
+        
+        try:
+            # Send Request
+            await retry_async(self.r.lpush, "queue:gpu_heavy", json.dumps(payload))
+            
+            # Wait for Reply (Block for max 5s)
+            # blpop returns tuple (key, value)
+            res = await self.r.blpop(temp_q, timeout=30)
+            
+            if res:
+                data = json.loads(res[1])
+                # Protocol: Worker returns {"content": {"vector": [...]}} for embed tasks
+                return data.get("content", {}).get("vector")
+        except Exception as e:
+            logger.error(f"Remote Embedding RPC failed: {e}")
+            return None
+        
+    async def _handle_vector_result(self, result_payload: Dict):
+        """Ingests a returned vector from GPU worker into ChromaDB."""
+        try:
+            task_id = result_payload.get("task_id", "")
+            content = result_payload.get("content", {})
+            vector = content.get("vector")
+            
+            if not vector or not task_id.startswith("vec-"):
+                logger.warning(f"Vector result dropped: task_id='{task_id}', has_vector={bool(vector)}")
+                return False
+
+            # Retrieve the path from Redis (stateless)
+            source_file = await self.r.get(f"vec_meta:{task_id}")
+            if source_file:
+                # Clean up the key so we don't litter Redis
+                await self.r.delete(f"vec_meta:{task_id}")
+            else:
+                # If it's not in Redis, check if it was echoed back, just in case
+                source_file = result_payload.get("source_file")
+            
+            if source_file:
+                ep_path = Path(source_file)
+                ep_filename = ep_path.name
+                doc_type = "manual_ingest"
+            else:
+                # Fallback to automatic Episode logic
+                ts_id = task_id.replace("vec-", "")
+                ep_filename = f"ep-{ts_id}.md"
+                ep_path = EPISODES_DIR / ep_filename
+                doc_type = "tier_2_episode"
+
+            if not ep_path.exists():
+                logger.warning(f"Original file not found for vector: {ep_path}")
+                return False
+
+            text_body = ep_path.read_text(encoding="utf-8")
+            now_iso = datetime.utcnow().isoformat()
+            meta = {
+                "source": ep_filename,
+                "ingested_at": now_iso,
+                "type": doc_type
+            }
+
+            # Extract structured metadata from YAML frontmatter and content
+            meta.update(self._extract_episode_metadata(text_body, result_payload))
+
+            # Derive created_at from episode frontmatter timestamp if available
+            meta["created_at"] = meta.get("fm_generated_at", now_iso)
+
+            force_new = result_payload.get("force_new", False)
+
+            def _insert_sync():
+                collection = self._ensure_chroma()
+                upsert_id = task_id
+
+                if not force_new:
+                    dup = self._find_semantic_duplicate(collection, vector, exclude_id=task_id)
+                    if dup:
+                        upsert_id = dup["id"]
+                        # Preserve original ingested_at; record update provenance
+                        meta["ingested_at"] = dup["metadata"].get("ingested_at", now_iso)
+                        meta["updated_at"] = now_iso
+                        meta["supersedes"] = task_id
+                        logger.info(
+                            f"Dedup: updating existing doc '{upsert_id}' "
+                            f"(L2={dup['distance']:.4f}) instead of inserting '{task_id}'"
+                        )
+
+                try:
+                    collection.upsert(
+                        ids=[upsert_id],
+                        embeddings=[vector],
+                        documents=[text_body],
+                        metadatas=[meta]
+                    )
+                except Exception as e:
+                    logger.error(f"Vector insert failed for {upsert_id}: {e}", exc_info=True)
+                    raise
+
+            await asyncio.to_thread(_insert_sync)
+            logger.info(f"Successfully stored vector for {ep_filename} in Tier 3 Memory.")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to store vector result: {e}")
+            return False
+    
 
     async def _tool_rag_ingest(self, action: Dict) -> Dict:
         """Tool handler: manually ingest a file into the Tier 3 vector store."""
